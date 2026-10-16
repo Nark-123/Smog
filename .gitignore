@@ -1,0 +1,102 @@
+# ==========================================
+# SMOG - GTNH 2.8.4
+# ==========================================
+
+# Gradle
+.gradle/
+**/build/
+.gradle-cache/
+
+# Build outputs
+/out/
+/bin/
+/dist/
+*.class
+
+# Minecraft development environment
+/run/
+/eclipse/
+/config/
+/logs/
+/crash-reports/
+/saves/
+
+options.txt
+servers.dat
+server.properties
+eula.txt
+usernamecache.json
+usercache.json
+ops.json
+whitelist.json
+banned-ips.json
+banned-players.json
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse
+.settings/
+.classpath
+.project
+.factorypath
+
+# Visual Studio Code
+.vscode/
+
+# Local Gradle configuration
+addon.local.gradle
+addon.local.gradle.kts
+addon.late.local.gradle
+addon.late.local.gradle.kts
+layout.json
+
+# ==========================================
+# Historical verification artifacts
+# ==========================================
+
+/verification/core-baseline/
+/verification/results/
+/verification/history.bundle
+/verification/*.patch
+/verification/PATCH_INDEX_RU.md
+
+# These are still used by existing tests.
+# Uncomment ONLY after updating test scripts.
+#
+# /verification/performance-baseline/
+# /verification/logic-before-format/
+
+# ==========================================
+# Logs, crash dumps and profiling
+# ==========================================
+
+*.log
+*.log.gz
+*.hprof
+*.jfr
+*.heapdump
+hs_err_pid*
+replay_pid*
+
+# ==========================================
+# Local environment and credentials
+# ==========================================
+
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# Operating system files
+# ==========================================
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo

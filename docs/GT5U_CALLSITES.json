@@ -1,0 +1,242 @@
+[
+  {
+    "source": "bartworks/common/tileentities/classic/TileEntityHeatedWaterPump.java",
+    "line": 191,
+    "code": ".ifPresent(c -> Pollution.addPollution(c, PollutionConfig.pollutionHeatedWaterPumpSecond));"
+  },
+  {
+    "source": "detrav/items/behaviours/BehaviourDetravToolElectricProspector.java",
+    "line": 137,
+    "code": "int pollution = Pollution.getPollution(c);"
+  },
+  {
+    "source": "detrav/items/behaviours/BehaviourDetravToolProspector.java",
+    "line": 388,
+    "code": "return Pollution.getPollution(aWorld.getChunkFromBlockCoords(aX, aZ));"
+  },
+  {
+    "source": "goodgenerator/blocks/tileEntity/MTELargeEssentiaSmeltery.java",
+    "line": 601,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), reducedPollution);"
+  },
+  {
+    "source": "gregtech/api/graphs/consumers/NodeEnergyReceiver.java",
+    "line": 66,
+    "code": "Pollution.addPollution(tWorld.getChunkFromBlockCoords(tX, tZ), GTMod.proxy.mPollutionOnExplosion);"
+  },
+  {
+    "source": "gregtech/api/metatileentity/BaseMetaTileEntity.java",
+    "line": 1363,
+    "code": "Pollution.addPollution((TileEntity) this, GTMod.proxy.mPollutionOnExplosion);"
+  },
+  {
+    "source": "gregtech/api/metatileentity/implementations/MTEBasicGenerator.java",
+    "line": 215,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), getPollution() / 2);"
+  },
+  {
+    "source": "gregtech/api/metatileentity/implementations/MTEBasicGenerator.java",
+    "line": 234,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), getPollution() / 2);"
+  },
+  {
+    "source": "gregtech/api/metatileentity/implementations/MTEHatchMuffler.java",
+    "line": 124,
+    "code": "if (Pollution.getPollution(getBaseMetaTileEntity()) >= GTMod.proxy.mPollutionSmogLimit) {"
+  },
+  {
+    "source": "gregtech/api/metatileentity/implementations/MTEHatchMuffler.java",
+    "line": 201,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), calculatePollutionReduction(pollutionAmount));"
+  },
+  {
+    "source": "gregtech/api/metatileentity/implementations/MTEMultiBlockBase.java",
+    "line": 1534,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), GTMod.proxy.mPollutionOnExplosion);"
+  },
+  {
+    "source": "gregtech/api/util/scanner/ScannerHelper.java",
+    "line": 489,
+    "code": "if (Pollution.hasPollution(currentChunk)) {"
+  },
+  {
+    "source": "gregtech/api/util/scanner/ScannerHelper.java",
+    "line": 491,
+    "code": "transComp(\"chunk_info_1\", goldComp(formatNumber(Pollution.getPollution(currentChunk))))"
+  },
+  {
+    "source": "gregtech/common/GTProxy.java",
+    "line": 1614,
+    "code": "Pollution.migrate(event);"
+  },
+  {
+    "source": "gregtech/common/misc/GTMiscCommand.java",
+    "line": 264,
+    "code": "Pollution.addPollution("
+  },
+  {
+    "source": "gregtech/common/pollution/Pollution.java",
+    "line": 273,
+    "code": "mutatePollution(world, coord.chunkXPos, coord.chunkZPos, c -> c.setAmount(pollution), pollutedChunks);"
+  },
+  {
+    "source": "gregtech/common/pollution/Pollution.java",
+    "line": 381,
+    "code": "mutatePollution(w, chunkX, chunkZ, d -> d.changeAmount(aPollution), null);"
+  },
+  {
+    "source": "gregtech/common/pollution/Pollution.java",
+    "line": 384,
+    "code": "private static void mutatePollution(World world, int x, int z, Consumer<ChunkData> mutator,"
+  },
+  {
+    "source": "gregtech/common/pollution/PollutionHelper.java",
+    "line": 10,
+    "code": "public static void furnaceAddPollutionOnUpdate(World world, int x, int z, int pollutionAmount) {"
+  },
+  {
+    "source": "gregtech/common/pollution/PollutionHelper.java",
+    "line": 12,
+    "code": "Pollution.addPollution(world.getChunkFromBlockCoords(x, z), pollutionAmount);"
+  },
+  {
+    "source": "gregtech/common/tileentities/boilers/MTEBoiler.java",
+    "line": 325,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), getPollution());"
+  },
+  {
+    "source": "gregtech/common/tileentities/boilers/MTEBoilerBronze.java",
+    "line": 158,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), getPollution());"
+  },
+  {
+    "source": "gregtech/common/tileentities/machines/multi/MTEAirFilterBase.java",
+    "line": 463,
+    "code": "return Pollution.getPollution(world, chunkX, chunkZ);"
+  },
+  {
+    "source": "gregtech/common/tileentities/machines/multi/MTEAirFilterBase.java",
+    "line": 473,
+    "code": "Pollution.addPollution(world, chunkX, chunkZ, -amount);"
+  },
+  {
+    "source": "gregtech/common/tileentities/machines/multi/MTECharcoalPit.java",
+    "line": 91,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), mMaxProgresstime * getPollutionPerTick(null));"
+  },
+  {
+    "source": "gregtech/common/tileentities/machines/multi/MTECokeOven.java",
+    "line": 341,
+    "code": "Pollution.addPollution(baseMetaTileEntity, GTMod.proxy.mPollutionCokeOvenPerSecond);"
+  },
+  {
+    "source": "gregtech/mixin/mixins/early/minecraft/pollution/MixinExplosionPollution.java",
+    "line": 34,
+    "code": "Pollution.addPollution("
+  },
+  {
+    "source": "gregtech/mixin/mixins/early/minecraft/pollution/MixinTileEntityFurnacePollution.java",
+    "line": 28,
+    "code": "furnaceAddPollutionOnUpdate(this.worldObj, this.xCoord, this.zCoord, FurnacePollution.FURNACE.getPollution());"
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/efr/MixinTileEntityBlastFurnacePollution.java",
+    "line": 25,
+    "code": "furnaceAddPollutionOnUpdate("
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/efr/MixinTileEntitySmokerPollution.java",
+    "line": 25,
+    "code": "furnaceAddPollutionOnUpdate("
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/galacticraftcore/MixinGalacticraftRocketPollution.java",
+    "line": 47,
+    "code": "Pollution.addPollution(worldObj.getChunkFromBlockCoords((int) posX, (int) posZ), pollutionAmount);"
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/ic2/MixinIC2IronFurnacePollution.java",
+    "line": 26,
+    "code": "furnaceAddPollutionOnUpdate("
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/natura/MixinNetherrackFurnacePollution.java",
+    "line": 25,
+    "code": "furnaceAddPollutionOnUpdate("
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/railcraft/MixinRailcraftBoilerPollution.java",
+    "line": 42,
+    "code": "Pollution.addPollution(world.getChunkFromBlockCoords(this.tile.getX(), this.tile.getZ()), pollutionAmount);"
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/railcraft/MixinRailcraftCokeOvenPollution.java",
+    "line": 36,
+    "code": "Pollution.addPollution(this.worldObj.getChunkFromBlockCoords(this.xCoord, this.zCoord), pollution);"
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/railcraft/MixinRailcraftTunnelBorePollution.java",
+    "line": 30,
+    "code": "Pollution.addPollution("
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/thaumcraft/MixinThaumcraftAlchemyFurnacePollution.java",
+    "line": 26,
+    "code": "furnaceAddPollutionOnUpdate("
+  },
+  {
+    "source": "gregtech/mixin/mixins/late/tinkersconstruct/MixinFurnaceLogicPollution.java",
+    "line": 25,
+    "code": "furnaceAddPollutionOnUpdate("
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/api/metatileentity/implementations/MTEHatchMufflerAdvanced.java",
+    "line": 117,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), pollutionAmount);"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/api/metatileentity/implementations/MTEHatchMufflerAdvanced.java",
+    "line": 276,
+    "code": "int aPollutionAmount = Pollution.getPollution(getBaseMetaTileEntity());"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEAtmosphericReconditioner.java",
+    "line": 313,
+    "code": "mCurrentChunkPollution = Pollution.getPollution(getBaseMetaTileEntity());"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEAtmosphericReconditioner.java",
+    "line": 349,
+    "code": "int mCurrentChunkPollution = Pollution.getPollution(aChunk);"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEAtmosphericReconditioner.java",
+    "line": 492,
+    "code": "Pollution.addPollution(this.getBaseMetaTileEntity(), -toRemove);"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEAtmosphericReconditioner.java",
+    "line": 565,
+    "code": "Pollution.addPollution(aChunk, -toRemove);"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEPollutionCreator.java",
+    "line": 226,
+    "code": "Pollution.addPollution(getBaseMetaTileEntity(), 100000 * pollutionMultiplier);"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEPollutionCreator.java",
+    "line": 247,
+    "code": "return Pollution.getPollution(aBaseMetaTileEntity);"
+  },
+  {
+    "source": "gtPlusPlus/xmod/gregtech/common/tileentities/machines/basic/MTEPollutionDetector.java",
+    "line": 240,
+    "code": "return Pollution.getPollution(aBaseMetaTileEntity);"
+  },
+  {
+    "source": "tectech/thing/metaTileEntity/single/MTEDebugPollutor.java",
+    "line": 113,
+    "code": "Pollution.addPollution(aBaseMetaTileEntity, isPolluting ? pollution : -pollution);"
+  }
+]

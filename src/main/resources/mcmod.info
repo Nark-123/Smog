@@ -1,0 +1,25 @@
+{
+  "modListVersion": 2,
+  "modList": [
+    {
+      "modid": "${modId}",
+      "name": "${modName}",
+      "description": "Spatial SMOG integration for GTNH. Experimental first integration.",
+      "version": "${modVersion}",
+      "mcversion": "${minecraftVersion}",
+      "url": "",
+      "updateUrl": "",
+      "authorList": [
+        "SMOG"
+      ],
+      "credits": "Supplied SMOG Java core; GTNH ExampleMod starter",
+      "logoFile": "",
+      "screenshots": [],
+      "parent": "",
+      "requiredMods": [],
+      "dependencies": [],
+      "dependants": [],
+      "useDependencyInformation": false
+    }
+  ]
+}

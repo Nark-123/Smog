@@ -1,0 +1,23 @@
+// All project-specific additions stay outside the official starter build scripts.
+sourceSets.main.java.exclude 'com/myname/**'
+sourceSets.main.java.exclude '**/.*/**'
+sourceSets.test.java.exclude '**/.*/**'
+tasks.withType(Test).configureEach { failOnNoDiscoveredTests = false }
+tasks.register('prepareSmogSmoke') {
+    dependsOn 'testClasses', 'reobfJar'
+    doLast {
+        file('build/smog-test-classpath.txt').text =
+            (sourceSets.test.runtimeClasspath + sourceSets.main.compileClasspath).asPath
+        configurations.runtimeClasspath.files
+    }
+}
+tasks.register('smogIntegrationTest', Exec) {
+    dependsOn 'prepareSmogSmoke'
+    environment 'SMOG_NESTED_GRADLE', '1'
+    commandLine 'python3', 'verification/smog_integration_test.py'
+}
+if (project.hasProperty('smogGameSmoke')) {
+    tasks.named('runServer').configure { jvmArgs '-Dsmog.gameSmoke=true' }
+}
+
+spotless { java { target 'src/*/java/**/*.java'; targetExclude '**/.*/**', '**/com/myname/**' } }

@@ -1,0 +1,14 @@
+[
+  "src/main/java/org/smogmod/commands/SmogCommand.java",
+  "src/main/java/org/smogmod/compat/gt5u/SmogGt5uBridge.java",
+  "src/main/java/org/smogmod/network/SmogNetwork.java",
+  "src/main/java/org/smogmod/persistence/WorldStore.java",
+  "src/main/java/org/smogmod/world/WorldRuntime.java",
+  "src/main/java/org/smogmod/world/Worlds.java",
+  "src/main/java/smog/Checkpoint.java",
+  "src/main/java/smog/DimensionState.java",
+  "src/main/java/smog/SpatialQueries.java",
+  "src/test/java/smog/CoreIntegrationSmoke.java",
+  "src/test/java/smog/PerformanceFixTests.java",
+  "src/test/java/smog/PerformanceWindowsSave.java"
+]

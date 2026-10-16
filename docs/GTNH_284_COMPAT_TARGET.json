@@ -1,0 +1,11 @@
+{
+  "target_pack": "GTNH 2.8.4",
+  "gt5u_modid_for_version_check": "gregtech_nh",
+  "gt5u_mod_version": "5.09.51.482",
+  "unimixins_min_version": "0.1.23",
+  "mixin_min_version": "0.8.5",
+  "java_class_major": 52,
+  "compat_runtime_jar_sha256": "798c26276805b3554800febfdad43bfb20a65dc97719269475c17be093b5d657",
+  "compile_or_game_test_284": "NOT_RUN",
+  "original_upstream_lock_json": "The original upstream lock documents the former GT5U 5.09.54.229 smoke baseline, not the new target."
+}

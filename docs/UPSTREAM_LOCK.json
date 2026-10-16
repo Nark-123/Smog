@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-16",
+  "starter_url": "https://github.com/GTNewHorizons/ExampleMod1.7.10/releases/download/master-packages/starter.zip",
+  "gtnhgradle": "2.0.33",
+  "retrofuturagradle": "2.0.5",
+  "gradle": "9.7.1",
+  "gt5u": "5.09.54.229",
+  "target_pack": "GTNH nightly 2026-10-15 (version selection from prior verified context; full pack not installed)",
+  "sha256": {
+    "starter.zip": "0e1bb6482eb16e391927900bca30fd03dbe256845dcd586bc19b61413b22e673",
+    "gt5-sources.jar": "d813a42b2d745f01b9034f0e355a8c6e3fa300e800359892edcc655de820e49c",
+    "SMOG_CORE_LAZY_JAVA8(3).zip": "18a39edf80af454686f072e8a213484a6d6c0cf4d5b4f2bb7f57473cb0f3c59a"
+  },
+  "gt5u_commit": "b1bfead8a5ea5f5695582da8133f1655ca0e5c1e",
+  "starter_ref_commit": "6453dec5f5f534e604887d3505ddf7125889c6f9",
+  "starter_build_scripts": {
+    "build.gradle.kts": {
+      "starter_sha256": "a8d220a3bbfedd08c1d95e049ff6a783dd12c5694cc0a86f64dd18797ae60e10",
+      "project_sha256": "a8d220a3bbfedd08c1d95e049ff6a783dd12c5694cc0a86f64dd18797ae60e10"
+    },
+    "settings.gradle.kts": {
+      "starter_sha256": "506a364984fc1ac8857c4264348e48147940ae0328277b809688de5147f215ed",
+      "project_sha256": "506a364984fc1ac8857c4264348e48147940ae0328277b809688de5147f215ed"
+    }
+  }
+}

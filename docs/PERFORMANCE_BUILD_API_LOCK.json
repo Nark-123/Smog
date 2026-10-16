@@ -1,0 +1,56 @@
+{
+  "target": "GTNH 2.8.4",
+  "gradle": "9.7.1",
+  "gtnhgradle": "2.0.33",
+  "retrofuturagradle": "2.0.5",
+  "build_java": "Temurin 25.0.4.1+1",
+  "bytecode_compiler_and_tests": "Temurin 8u504-b01",
+  "tool_java": [
+    "17.0.20.1+1",
+    "21.0.12.1+1"
+  ],
+  "artifacts": [
+    {
+      "coordinate": "com.github.GTNewHorizons:GT5-Unofficial:5.09.51.482",
+      "file": "GT5-Unofficial-5.09.51.482-dev.jar",
+      "sha256": "18f6996e74fda161cf82bf27d5cf9b59c7f5762fca1f53ee438618aa65c766f1"
+    },
+    {
+      "coordinate": "com.github.GTNewHorizons:GTNHLib:0.7.10",
+      "file": "GTNHLib-0.7.10-dev.jar",
+      "sha256": "ab07604d386ae98f64af96fd0a74cbdd8c33a983f284b39013a6b2fdb369a622"
+    },
+    {
+      "coordinate": "io.github.legacymoddingmc:unimixins:0.1.23",
+      "file": "unimixins-0.1.23-dev.jar",
+      "sha256": "72c5f85b380ae7c0d65f26add0fd8a161957acc08c8d714ef766c03f32be370d"
+    },
+    {
+      "coordinate": "com.github.GTNewHorizons:StructureLib:1.4.23",
+      "file": "StructureLib-1.4.23-dev.jar",
+      "sha256": "3184cc1f94644e9409f8835a8e42e997bfc625e6449aa2fae76604642d0a963b"
+    },
+    {
+      "coordinate": "com.github.GTNewHorizons:ModularUI:1.2.20",
+      "file": "ModularUI-1.2.20-dev.jar",
+      "sha256": "eda1500d1465aa5abf7a48c2ec7dd8799d416dd77b6d46cc2672d5c3cd1b9538"
+    },
+    {
+      "coordinate": "com.github.GTNewHorizons:ModularUI2:2.2.20-1.7.10",
+      "file": "ModularUI2-2.2.20-1.7.10-dev.jar",
+      "sha256": "1babf75337e4ae4a08c08615913c1b69b44d8f07667a5e33834dbd09fd868e1c"
+    },
+    {
+      "coordinate": "com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-702-GTNH",
+      "file": "Applied-Energistics-2-Unofficial-rv3-beta-702-GTNH-api.jar",
+      "sha256": "c78601e99da2a824fa8462206f9bddc2e0ce9854818fb719bf71a514a16283be"
+    },
+    {
+      "coordinate": "com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-702-GTNH",
+      "file": "Applied-Energistics-2-Unofficial-rv3-beta-702-GTNH-dev.jar",
+      "sha256": "a4b0268bf10f98ca14fbac9e2e3c0d88c3c9eef03be62a1f6168d643f9b2cbb6"
+    }
+  ],
+  "full_gtnh_test": "NOT_RUN",
+  "attached_baseline_zip_sha256": "eca13d77d94cccadedfccf580dd6c067c2642203d9147b50ac6832cd7950d715"
+}
