@@ -21,6 +21,39 @@ final class EdgeAccumulator {
         size = 0;
     }
 
+    /** Restore a previously frozen set of internal edges without reallocating on refresh. */
+    void copyFrom(EdgeAccumulator source) {
+        if (source == this) {
+            return;
+        }
+        if (keys.length < source.keys.length) {
+            keys = new long[source.keys.length];
+            areas = new int[source.keys.length];
+            distances = new int[source.keys.length];
+        }
+        if (keys.length == source.keys.length) {
+            System.arraycopy(source.keys, 0, keys, 0, keys.length);
+            System.arraycopy(source.areas, 0, areas, 0, areas.length);
+            System.arraycopy(source.distances, 0, distances, 0, distances.length);
+            size = source.size;
+            return;
+        }
+        // Keep the larger table: its hash mask differs from the source's,
+        // so each retained key must be rehashed into the destination table.
+        Arrays.fill(keys, 0);
+        size = 0;
+        for (int i = 0; i < source.keys.length; i++) {
+            long key = source.keys[i];
+            if (key != 0) {
+                int slot = slot(key);
+                keys[slot] = key;
+                areas[slot] = source.areas[i];
+                distances[slot] = source.distances[i];
+                size++;
+            }
+        }
+    }
+
     void add(int a, int b, int distance) {
         if (a > b) {
             int t = a;

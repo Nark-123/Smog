@@ -74,6 +74,10 @@ public final class DimensionState implements AutoCloseable {
 
     private final ArrayDeque<CellBuild> prepared = new ArrayDeque<>();
 
+    // Restart-only diagnostic knob. Default 64 preserves the PerformanceFix scheduler.
+    private static final int PREPARED_LIMIT = Math.max(8,
+            Math.min(1024, Integer.getInteger("smog.preparedLimit", 64)));
+
     private Cell[] owners = new Cell[16];
 
     private boolean[] frontWatch = new boolean[16];
@@ -97,6 +101,9 @@ public final class DimensionState implements AutoCloseable {
     public long maxPublishNanos, maxBuildUnitNanos, maxContactUnitNanos, maxSnapshotUnitNanos;
     public volatile long ioNanos, ioCpuNanos;
     public long staleJobs, publications, unloadCancellations, budgetOverruns;
+
+    /** Runtime-only phase timings; reset does not affect the graph, scheduling or saves. */
+    public final GeometryMetrics geometryMetrics = new GeometryMetrics();
 
     private Checkpoint.Capture capture;
 
@@ -193,6 +200,9 @@ public final class DimensionState implements AutoCloseable {
         boolean queued, front, building;
 
         long created;
+
+        // Transient queue timestamps in simulation ticks, never serialized.
+        long diagnosticQueuedTick = -1, diagnosticPreparedTick = -1;
 
         int frontierFaces;
 
@@ -381,6 +391,9 @@ public final class DimensionState implements AutoCloseable {
             return;
         }
         if (!c.queued) {
+            if (c.diagnosticQueuedTick < 0) {
+                c.diagnosticQueuedTick = ticks;
+            }
             c.queued = true;
             builds.addLast(c);
         }
@@ -503,6 +516,7 @@ public final class DimensionState implements AutoCloseable {
                         generation++;
                     }
                     c.status = c.parked == null ? Status.ABSENT : Status.PARKED;
+                    c.diagnosticQueuedTick = c.diagnosticPreparedTick = -1;
                 }
             }
         }
@@ -836,9 +850,18 @@ public final class DimensionState implements AutoCloseable {
         long start = System.nanoTime();
         boolean commit = false;
         if (capture == null && (hadFrame || parts == 1)) {
+            geometryMetrics.partCalls++;
             commit = finishPendingPart(parts);
+            if (commit) {
+                geometryMetrics.partCommits++;
+            }
+        } else if (capture != null && hadFrame) {
+            geometryMetrics.partsSkippedForCapture++;
         }
         lastLawNanos = System.nanoTime() - start;
+        if (graph.isStepInProgress() || capture != null) {
+            geometryMetrics.safeWindow(false);
+        }
         if (autoSavePath != null
                 && ticks % autoSaveTicks == 0
                 && (saveFuture == null || saveFuture.isDone())) {
@@ -876,7 +899,11 @@ public final class DimensionState implements AutoCloseable {
             }
             graph.sparseSources(candidateNodes, candidate.amounts);
         }
-        if (!graph.sparsePart(parts)) {
+        boolean complete = graph.sparsePart(parts);
+        if (graph.isStepInProgress()) {
+            geometryMetrics.safeWindow(false);
+        }
+        if (!complete) {
             return false;
         }
         for (int i = 0; i < candidateNodes.length; i++) {
@@ -973,8 +1000,20 @@ public final class DimensionState implements AutoCloseable {
         long start = System.nanoTime();
         lastSnapshotNanos = 0;
         long snapshotCpuStart = -1;
+        boolean noEligibleWork = false;
+        boolean eligibleCall = !graph.isStepInProgress() && capture == null
+                && (savePath == null || writing);
+        int preparedAtStart = prepared.size();
+        geometryMetrics.beginSafeCall(eligibleCall);
+        if (eligibleCall) {
+            geometryMetrics.safeWindow(true);
+            geometryMetrics.eligibleGeometryCalls++;
+        } else {
+            geometryMetrics.safeWindow(false);
+        }
         while (System.nanoTime() - start < budget) {
             if (savePath != null && !writing && !graph.isStepInProgress()) {
+                geometryMetrics.safeWindow(false);
                 long s = System.nanoTime();
                 if (snapshotCpuStart < 0) {
                     snapshotCpuStart = cpuTime();
@@ -1000,6 +1039,7 @@ public final class DimensionState implements AutoCloseable {
                 lastSnapshotNanos += duration;
                 snapshotNanos += duration;
                 maxSnapshotUnitNanos = Math.max(maxSnapshotUnitNanos, duration);
+                geometryMetrics.capture(duration);
                 if (done) {
                     if (snapshotCpuStart >= 0) {
                         captureCpuNanos += cpuTime() - snapshotCpuStart;
@@ -1013,8 +1053,10 @@ public final class DimensionState implements AutoCloseable {
                 CellBuild b = prepared.peekFirst();
                 if (b.cell.ticket != b.ticket || !provider.isReady(b.cell.cube.key)) {
                     prepared.removeFirst();
+                    b.cell.diagnosticPreparedTick = -1;
                     b.cell.building = false;
                     staleJobs++;
+                    geometryMetrics.staleJobs++;
                     enqueue(b.cell);
                     continue;
                 }
@@ -1023,25 +1065,46 @@ public final class DimensionState implements AutoCloseable {
                     continue;
                 }
                 if (!graph.isStepInProgress() && capture == null) {
-                    if (!b.validWorld()) {
+                    long validationStart = System.nanoTime();
+                    boolean validWorld = b.validWorld();
+                    geometryMetrics.worldValidation(System.nanoTime() - validationStart, validWorld);
+                    if (!validWorld) {
                         prepared.removeFirst();
+                        b.cell.diagnosticPreparedTick = -1;
                         b.cell.building = false;
                         staleJobs++;
+                        geometryMetrics.staleJobs++;
                         enqueue(b.cell);
                         continue;
                     }
-                    if (!b.validContacts()) {
+                    validationStart = System.nanoTime();
+                    boolean validContacts = b.validContacts();
+                    geometryMetrics.contactValidation(System.nanoTime() - validationStart, validContacts);
+                    if (!validContacts) {
+                        long refreshStart = System.nanoTime();
                         b.refreshContacts();
+                        geometryMetrics.refreshed(System.nanoTime() - refreshStart);
+                        b.diagnosticRefreshingContacts = true;
                         continue;
                     }
+                    geometryMetrics.safeWindow(true);
                     long s = System.nanoTime();
                     publish(b);
                     long duration = System.nanoTime() - s;
                     publishNanos += duration;
                     maxPublishNanos = Math.max(maxPublishNanos, duration);
+                    geometryMetrics.publish(duration);
+                    geometryMetrics.publishedWait(
+                            b.cell.diagnosticQueuedTick < 0 ? -1
+                                    : Math.max(0, ticks - b.cell.diagnosticQueuedTick),
+                            b.cell.diagnosticPreparedTick < 0 ? -1
+                                    : Math.max(0, ticks - b.cell.diagnosticPreparedTick));
                     prepared.removeFirst();
+                    b.cell.diagnosticQueuedTick = b.cell.diagnosticPreparedTick = -1;
                     b.cell.building = false;
+                    long eventsStart = System.nanoTime();
                     applyEvents();
+                    geometryMetrics.publicationEvents(System.nanoTime() - eventsStart);
                     continue;
                 }
             }
@@ -1050,44 +1113,82 @@ public final class DimensionState implements AutoCloseable {
                     Cell c = job.cell;
                     c.building = false;
                     staleJobs++;
+                    geometryMetrics.staleJobs++;
                     job = null;
                     enqueue(c);
                     continue;
                 }
                 if (job.ready) {
                     prepared.addLast(job);
+                    job.cell.diagnosticPreparedTick = ticks;
+                    geometryMetrics.preparedAccepted++;
                     job = null;
                 } else {
                     advanceBuild(job);
                 }
                 continue;
             }
-            if (!builds.isEmpty() && prepared.size() < 64) {
+            if (!builds.isEmpty() && prepared.size() < PREPARED_LIMIT) {
                 Cell c = builds.removeFirst();
                 c.queued = false;
                 if (!provider.isReady(c.cube.key)) {
                     continue;
                 }
                 c.building = true;
+                if (c.geometry == null) {
+                    geometryMetrics.newJobs++;
+                } else {
+                    geometryMetrics.rebuildJobs++;
+                }
                 job = new CellBuild(this, c);
+                geometryMetrics.jobsStarted++;
                 c.status = c.geometry == null ? Status.BUILDING : Status.DIRTY;
                 continue;
             }
             if (!fronts.isEmpty()) {
                 Cell c = fronts.removeFirst();
                 c.front = false;
+                long frontStart = System.nanoTime();
                 scanFront(c);
+                geometryMetrics.front(System.nanoTime() - frontStart);
                 continue;
             }
+            noEligibleWork = true;
             break;
+        }
+        if (noEligibleWork) {
+            geometryMetrics.idleEndCalls++;
+            if (geometryPending() || savePath != null) {
+                geometryMetrics.idleWithBacklogCalls++;
+                if (!prepared.isEmpty() && prepared.peekFirst().ready) {
+                    if (graph.isStepInProgress()) {
+                        geometryMetrics.waitSolverCalls++;
+                    }
+                    if (capture != null) {
+                        geometryMetrics.waitCaptureCalls++;
+                    }
+                }
+                if (prepared.size() >= PREPARED_LIMIT && !builds.isEmpty()) {
+                    geometryMetrics.preparedFullCalls++;
+                }
+            }
+        } else if (budget > 0) {
+            geometryMetrics.budgetEndCalls++;
         }
         if (snapshotCpuStart >= 0) {
             captureCpuNanos += cpuTime() - snapshotCpuStart;
         }
         maxCaptureTickNanos = Math.max(maxCaptureTickNanos, lastSnapshotNanos);
+        if (graph.isStepInProgress() || capture != null) {
+            geometryMetrics.safeWindow(false);
+        }
         lastGeometryNanos = System.nanoTime() - start;
+        geometryMetrics.endSafeCall(lastGeometryNanos, budget, !noEligibleWork && budget > 0,
+                preparedAtStart, prepared.size());
+        geometryMetrics.geometry(lastGeometryNanos, geometryPending() || savePath != null);
         if (budget > 0 && lastGeometryNanos > budget) {
             budgetOverruns++;
+            geometryMetrics.budgetOverruns++;
         }
     }
 
@@ -1102,10 +1203,24 @@ public final class DimensionState implements AutoCloseable {
 
     private void advanceBuild(CellBuild b) {
         long start = System.nanoTime();
+        int phase = b.diagnosticStage();
         boolean contacts = b.inContacts();
         b.advance();
         long duration = System.nanoTime() - start;
+        geometryMetrics.phase(phase, duration);
+        if (phase == GeometryMetrics.PARTITION && b.diagnosticStage() != phase) {
+            geometryMetrics.partitionsCompleted++;
+            geometryMetrics.partitionNodes += b.local.count;
+            geometryMetrics.maxPartitionNodes =
+                    Math.max(geometryMetrics.maxPartitionNodes, b.local.count);
+        }
+        if (phase == GeometryMetrics.EXTERNAL_CONTACTS && b.ready) {
+            geometryMetrics.cellsPrepared++;
+        }
         if (contacts) {
+            if (b.diagnosticRefreshingContacts) {
+                geometryMetrics.refreshedAdvance(duration);
+            }
             contactNanos += duration;
             maxContactUnitNanos = Math.max(maxContactUnitNanos, duration);
         } else {
@@ -1408,6 +1523,81 @@ public final class DimensionState implements AutoCloseable {
 
     public int pendingIntervals() {
         return frames.size();
+    }
+
+    /** Current limit is a restart-only diagnostic property, not a physics parameter. */
+    public int preparedLimit() {
+        return PREPARED_LIMIT;
+    }
+
+    /** O(1) head-of-queue ages, NOT a scan for the oldest cell in the world. */
+    public long[] geometryQueueHeadAgeTicks() {
+        Cell first = builds.peekFirst();
+        CellBuild firstPrepared = prepared.peekFirst();
+        return new long[] {
+            first == null || first.diagnosticQueuedTick < 0 ? -1
+                    : Math.max(0, ticks - first.diagnosticQueuedTick),
+            firstPrepared == null || firstPrepared.cell.diagnosticPreparedTick < 0 ? -1
+                    : Math.max(0, ticks - firstPrepared.cell.diagnosticPreparedTick)
+        };
+    }
+
+    /** Read-only availability, independent of the legacy numeric sample() contract. */
+    public boolean hasSampleGeometry(BlockPos point) {
+        check(point.dimension);
+        Cell c = cell(point.cell(), false);
+        return c != null && c.geometry != null;
+    }
+
+    /** Time waiting for this Cell8 since its first eligible enqueue, or -1. */
+    public long sampleQueueAgeTicks(BlockPos point) {
+        check(point.dimension);
+        Cell c = cell(point.cell(), false);
+        return c == null || c.diagnosticQueuedTick < 0 ? -1
+                : Math.max(0, ticks - c.diagnosticQueuedTick);
+    }
+
+    /** O(1) queue overview; pending work is not necessarily runnable right now. */
+    public int[] geometryQueues() {
+        return new int[] { builds.size(), job == null ? 0 : 1, prepared.size(), fronts.size() };
+    }
+
+    /** Expensive only when explicitly requested; never run this in the tick hot path. */
+    public GeometryFootprint geometryFootprint() {
+        GeometryFootprint result = new GeometryFootprint();
+        result.registeredCubes = cubes.size();
+        for (CubeRecord cube : cubes.values()) {
+            if (provider.isReady(cube.key)) {
+                result.readyCubes++;
+            }
+            boolean active = false;
+            boolean parked = false;
+            for (Cell c : cube.cells) {
+                if (c == null) {
+                    continue;
+                }
+                result.allocatedCells++;
+                if (c.geometry != null) {
+                    result.activeCells++;
+                    active = true;
+                }
+                if (c.parked != null) {
+                    result.parkedCells++;
+                    parked = true;
+                }
+            }
+            if (active) {
+                result.activeCubes++;
+            } else if (parked) {
+                result.parkedOnlyCubes++;
+            }
+        }
+        return result;
+    }
+
+    public static final class GeometryFootprint {
+        public int registeredCubes, readyCubes, activeCubes, parkedOnlyCubes;
+        public int allocatedCells, activeCells, parkedCells;
     }
 
     /** Diagnostics only. Canonical vertex identity is its complete sorted voxel membership. */

@@ -44,6 +44,42 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
     private final Map<CubeKey, ImmutableCubeSnapshot> snapshots = new HashMap<>();
 
+    /** Owner-thread-only diagnostic counters; no persistent data or per-block timers. */
+    private final Diagnostics diagnostics = new Diagnostics();
+
+    public static final class Diagnostics {
+
+        public long hits, misses, unavailable, buildNanos, maxBuildNanos, buildFailures;
+        public long invalidations, invalidateNanos, maxInvalidateNanos, evictedSnapshots;
+        public long loads, unloads, revisions;
+
+        private void reset() {
+            hits = misses = unavailable = buildNanos = maxBuildNanos = buildFailures = 0;
+            invalidations = invalidateNanos = maxInvalidateNanos = evictedSnapshots = 0;
+            loads = unloads = revisions = 0;
+        }
+    }
+
+    public Diagnostics diagnostics() {
+        checkThread();
+        return diagnostics;
+    }
+
+    public void resetDiagnostics() {
+        checkThread();
+        diagnostics.reset();
+    }
+
+    public int loadedColumnCount() {
+        checkThread();
+        return columns.size();
+    }
+
+    public int cachedSnapshotCount() {
+        checkThread();
+        return snapshots.size();
+    }
+
     public ForgeWorldSnapshotProvider(int dimension) {
         this.dimension = dimension;
     }
@@ -60,6 +96,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
     public void load(Chunk chunk) {
         checkThread();
+        diagnostics.loads++;
         Column old = columns.get(key(chunk.xPosition, chunk.zPosition));
         if (old != null && old.chunk == chunk) {
             return;
@@ -70,6 +107,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
     public long unload(int x, int z) {
         checkThread();
+        diagnostics.unloads++;
         Column old = columns.remove(key(x, z));
         discard(x, z);
         return old == null ? nextEpoch : old.epoch;
@@ -77,6 +115,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
     public void revise(int x, int z) {
         checkThread();
+        diagnostics.revisions++;
         Column column = columns.get(key(x, z));
         if (column != null) {
             column.revision++;
@@ -85,8 +124,15 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     }
 
     private void discard(int x, int z) {
+        long start = System.nanoTime();
+        int before = snapshots.size();
         snapshots.keySet()
             .removeIf(c -> c.x == x && c.z == z);
+        long duration = System.nanoTime() - start;
+        diagnostics.invalidations++;
+        diagnostics.evictedSnapshots += before - snapshots.size();
+        diagnostics.invalidateNanos += duration;
+        diagnostics.maxInvalidateNanos = Math.max(diagnostics.maxInvalidateNanos, duration);
     }
 
     @Override
@@ -98,42 +144,55 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     @Override
     public ImmutableCubeSnapshot snapshotIfReady(CubeKey cube) {
         if (!isReady(cube)) {
+            diagnostics.unavailable++;
             return null;
         }
         ImmutableCubeSnapshot cached = snapshots.get(cube);
         if (cached != null) {
+            diagnostics.hits++;
             return cached;
         }
-        Column column = columns.get(key(cube.x, cube.z));
-        byte[] air = new byte[4096];
-        byte[] atmosphere = new byte[4096];
-        for (int y = 0; y < 16; y++) {
-            int worldY = cube.y * 16 + y;
-            for (int z = 0; z < 16; z++) {
-                for (int x = 0; x < 16; x++) {
-                    Block block = column.chunk.getBlock(x, worldY, z);
-                    int metadata = column.chunk.getBlockMetadata(x, worldY, z);
-                    boolean open = block == Blocks.air || block == Blocks.fire
-                        || block == Blocks.torch
-                        || block == Blocks.redstone_wire;
-                    if (block instanceof BlockDoor) {
-                        if ((metadata & 8) != 0 && worldY > 0) {
-                            metadata = column.chunk.getBlockMetadata(x, worldY - 1, z);
+        diagnostics.misses++;
+        long buildStart = System.nanoTime();
+        try {
+            Column column = columns.get(key(cube.x, cube.z));
+            byte[] air = new byte[4096];
+            byte[] atmosphere = new byte[4096];
+            for (int y = 0; y < 16; y++) {
+                int worldY = cube.y * 16 + y;
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        Block block = column.chunk.getBlock(x, worldY, z);
+                        int metadata = column.chunk.getBlockMetadata(x, worldY, z);
+                        boolean open = block == Blocks.air || block == Blocks.fire
+                            || block == Blocks.torch
+                            || block == Blocks.redstone_wire;
+                        if (block instanceof BlockDoor) {
+                            if ((metadata & 8) != 0 && worldY > 0) {
+                                metadata = column.chunk.getBlockMetadata(x, worldY - 1, z);
+                            }
+                            open = (metadata & 4) != 0;
+                        } else if (block instanceof BlockTrapDoor || block instanceof BlockFenceGate) {
+                            open = (metadata & 4) != 0;
                         }
-                        open = (metadata & 4) != 0;
-                    } else if (block instanceof BlockTrapDoor || block instanceof BlockFenceGate) {
-                        open = (metadata & 4) != 0;
-                    }
-                    int index = x + 16 * y + 256 * z;
-                    air[index] = (byte) (open ? 1 : 0);
-                    if (open && worldY == 255) {
-                        atmosphere[index] = SmogConfig.Y_PLUS;
+                        int index = x + 16 * y + 256 * z;
+                        air[index] = (byte) (open ? 1 : 0);
+                        if (open && worldY == 255) {
+                            atmosphere[index] = SmogConfig.Y_PLUS;
+                        }
                     }
                 }
             }
+            cached = new ImmutableCubeSnapshot(cube, column.epoch, column.revision, air, atmosphere);
+            snapshots.put(cube, cached);
+            return cached;
+        } catch (RuntimeException error) {
+            diagnostics.buildFailures++;
+            throw error;
+        } finally {
+            long duration = System.nanoTime() - buildStart;
+            diagnostics.buildNanos += duration;
+            diagnostics.maxBuildNanos = Math.max(diagnostics.maxBuildNanos, duration);
         }
-        cached = new ImmutableCubeSnapshot(cube, column.epoch, column.revision, air, atmosphere);
-        snapshots.put(cube, cached);
-        return cached;
     }
 }

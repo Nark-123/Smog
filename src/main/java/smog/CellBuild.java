@@ -24,6 +24,9 @@ final class CellBuild {
 
     final EdgeAccumulator edges = new EdgeAccumulator();
 
+    // Frozen after stage 3. Neighbour publications can invalidate only stage-4 edges.
+    private final EdgeAccumulator internalEdges = new EdgeAccumulator();
+
     final double[] boundary = new double[512];
 
     private final CubeKey[] keys;
@@ -39,6 +42,9 @@ final class CellBuild {
     private int stage, cursor, face;
 
     boolean ready;
+
+    // Diagnostic only: subsequent contact-stage work belongs to a refresh.
+    boolean diagnosticRefreshingContacts;
 
     CellBuild(DimensionState state, DimensionState.Cell cell) {
         this.state = state;
@@ -65,6 +71,11 @@ final class CellBuild {
 
     boolean inContacts() {
         return stage >= 3;
+    }
+
+    // Diagnostics only: inspect the next scheduler stage without advancing the build.
+    int diagnosticStage() {
+        return stage;
     }
 
     void advance() {
@@ -132,6 +143,9 @@ final class CellBuild {
                         / (state.config.mode == SmogConfig.COMPONENT ? 4.0 : (local.distance[p] & 255) + .5);
                 }
                 if (cursor == 512) {
+                    // Preserve internal conductances once; they depend only on the
+                    // checked world snapshots, never on neighbour publication order.
+                    internalEdges.copyFrom(edges);
                     cursor = face = 0;
                     stage = 4;
                 }
@@ -200,10 +214,11 @@ final class CellBuild {
     }
 
     void refreshContacts() {
-        edges.clear();
-        Arrays.fill(boundary, 0);
+        // Discard stale external edges but retain the exact internal conductances
+        // and atmospheric boundary computed from immutable world snapshots.
+        edges.copyFrom(internalEdges);
         cursor = face = 0;
-        stage = 3;
+        stage = 4;
         ready = false;
         for (int d = 0; d < 6; d++) {
             DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);

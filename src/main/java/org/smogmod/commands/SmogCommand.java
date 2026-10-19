@@ -21,7 +21,7 @@ public final class SmogCommand extends CommandBase {
     @Override
     public String getCommandUsage(ICommandSender sender) {
         return "/smog status|sample x y z|pulse x y z amount|remove x y z amount|source x y z"
-                   + " rate|invalidate x1 y1 z1 x2 y2 z2|save";
+                   + " rate|invalidate x1 y1 z1 x2 y2 z2|save|perf [reset|log on|log off|log test]";
     }
 
     @Override
@@ -32,6 +32,36 @@ public final class SmogCommand extends CommandBase {
     @Override
     public void processCommand(ICommandSender sender, String[] args) {
         WorldRuntime runtime = Worlds.get(sender.getEntityWorld());
+        if (args.length >= 1 && "perf".equals(args[0])) {
+            if (args.length == 1) {
+                for (String line : runtime.performanceLines()) {
+                    sender.addChatMessage(new ChatComponentText(line));
+                }
+                return;
+            }
+            if (args.length == 2 && "reset".equals(args[1])) {
+                runtime.resetPerformance();
+                sender.addChatMessage(new ChatComponentText(
+                        "SMOG perf counters reset (simulation, cache and saves unchanged)"));
+                return;
+            }
+            if (args.length == 3 && "log".equals(args[1])
+                    && ("on".equals(args[2]) || "off".equals(args[2]))) {
+                runtime.setPerformanceLogging("on".equals(args[2]));
+                sender.addChatMessage(new ChatComponentText(
+                        "SMOG perf periodic logging " + args[2]));
+                sender.addChatMessage(new ChatComponentText(runtime.performanceLogStatus()));
+                return;
+            }
+            if (args.length == 3 && "log".equals(args[1]) && "test".equals(args[2])) {
+                runtime.testPerformanceLogging();
+                sender.addChatMessage(new ChatComponentText(
+                        "SMOG perf test submitted to Forge log and async diagnostic file"));
+                sender.addChatMessage(new ChatComponentText(runtime.performanceLogStatus()));
+                return;
+            }
+            throw new WrongUsageException(getCommandUsage(sender));
+        }
         if (args.length == 1 && "status".equals(args[0])) {
             sender.addChatMessage(
                     new ChatComponentText(
@@ -115,8 +145,19 @@ public final class SmogCommand extends CommandBase {
         if (args.length >= 4) {
             BlockPos point = point(sender, args, 1);
             if (args.length == 4 && "sample".equals(args[0])) {
-                sender.addChatMessage(
-                        new ChatComponentText("SMOG concentration=" + runtime.state.sample(point)));
+                if (!runtime.state.hasSampleGeometry(point)) {
+                    sender.addChatMessage(new ChatComponentText(
+                            "SMOG concentration=NOT_READY status="
+                                    + runtime.state.status(point.cell())
+                                    + " queueAgeTicks=" + runtime.state.sampleQueueAgeTicks(point)
+                                    + " (0 is NOT confirmed; geometry not published)"));
+                } else {
+                    sender.addChatMessage(new ChatComponentText(
+                            "SMOG concentration=" + runtime.state.sample(point)
+                                    + " status=" + runtime.state.status(point.cell())
+                                    + " modelLagSec=" + (runtime.state.gameTime()
+                                    - runtime.state.modelTime())));
+                }
                 return;
             }
             if (args.length == 5) {
