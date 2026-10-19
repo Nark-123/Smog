@@ -75,8 +75,7 @@ public final class DimensionState implements AutoCloseable {
     private final ArrayDeque<CellBuild> prepared = new ArrayDeque<>();
 
     // Restart-only diagnostic knob. Default 64 preserves the PerformanceFix scheduler.
-    private static final int PREPARED_LIMIT = Math.max(8,
-            Math.min(1024, Integer.getInteger("smog.preparedLimit", 64)));
+    private static final int PREPARED_LIMIT = Math.max(8, Math.min(1024, Integer.getInteger("smog.preparedLimit", 64)));
 
     private Cell[] owners = new Cell[16];
 
@@ -111,10 +110,12 @@ public final class DimensionState implements AutoCloseable {
 
     /** Both callbacks run on the world thread; attachments run on the I/O thread only. */
     public interface SaveParticipant {
+
         SaveAttachment capture();
     }
 
     public interface SaveAttachment {
+
         default void beforeWrite() {}
 
         void commit(Path core) throws Exception;
@@ -129,13 +130,12 @@ public final class DimensionState implements AutoCloseable {
 
     private long captureStarted;
 
-    private static final java.lang.management.ThreadMXBean CPU =
-            java.lang.management.ManagementFactory.getThreadMXBean();
+    private static final java.lang.management.ThreadMXBean CPU = java.lang.management.ManagementFactory
+        .getThreadMXBean();
 
     private static long cpuTime() {
-        return CPU.isCurrentThreadCpuTimeSupported() && CPU.isThreadCpuTimeEnabled()
-                ? CPU.getCurrentThreadCpuTime()
-                : -1;
+        return CPU.isCurrentThreadCpuTimeSupported() && CPU.isThreadCpuTimeEnabled() ? CPU.getCurrentThreadCpuTime()
+            : -1;
     }
 
     private Path savePath, autoSavePath;
@@ -152,13 +152,11 @@ public final class DimensionState implements AutoCloseable {
 
     private volatile Path diskPath;
 
-    private final ExecutorService writer =
-            Executors.newSingleThreadExecutor(
-                    r -> {
-                        Thread t = new Thread(r, "smog-checkpoint");
-                        t.setDaemon(true);
-                        return t;
-                    });
+    private final ExecutorService writer = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "smog-checkpoint");
+        t.setDaemon(true);
+        return t;
+    });
 
     static final class CubeRecord {
 
@@ -287,7 +285,8 @@ public final class DimensionState implements AutoCloseable {
         final Source[] handles;
 
         Frame(Map<BlockPos, Double> values, double rejected) {
-            positions = values.keySet().toArray(new BlockPos[0]);
+            positions = values.keySet()
+                .toArray(new BlockPos[0]);
             amounts = new double[positions.length];
             for (int i = 0; i < positions.length; i++) {
                 amounts[i] = values.get(positions[i]);
@@ -317,11 +316,8 @@ public final class DimensionState implements AutoCloseable {
     }
 
     public DimensionState(int dimension, SmogConfig config, WorldSnapshotProvider provider) {
-        if (config.containerSize != 8
-                || config.phase != 0
-                || config.law != SmogConfig.QUADRATIC_FAST) {
-            throw new IllegalArgumentException(
-                    "Sparse lifecycle requires Cell8, phase=0, QUADRATIC_FAST");
+        if (config.containerSize != 8 || config.phase != 0 || config.law != SmogConfig.QUADRATIC_FAST) {
+            throw new IllegalArgumentException("Sparse lifecycle requires Cell8, phase=0, QUADRATIC_FAST");
         }
         this.dimension = dimension;
         this.config = config;
@@ -457,8 +453,7 @@ public final class DimensionState implements AutoCloseable {
                     Geometry g = c.geometry;
                     for (int i = 0; i < g.dependencies.length; i++) {
                         if (g.dependencies[i].equals(key)) {
-                            if (g.epochs[i] != (ready ? epoch : -1)
-                                    || g.revisions[i] != (ready ? revision : -1)) {
+                            if (g.epochs[i] != (ready ? epoch : -1) || g.revisions[i] != (ready ? revision : -1)) {
                                 dirty(c);
                             }
                             break;
@@ -532,12 +527,11 @@ public final class DimensionState implements AutoCloseable {
             throw new IllegalArgumentException("Reversed region");
         }
         for (CubeRecord r : cubes.values()) {
-            if ((long) r.key.x * 16 + 15 >= min.x
-                    && (long) r.key.x * 16 <= max.x
-                    && (long) r.key.y * 16 + 15 >= min.y
-                    && (long) r.key.y * 16 <= max.y
-                    && (long) r.key.z * 16 + 15 >= min.z
-                    && (long) r.key.z * 16 <= max.z) {
+            if ((long) r.key.x * 16 + 15 >= min.x && (long) r.key.x * 16 <= max.x
+                && (long) r.key.y * 16 + 15 >= min.y
+                && (long) r.key.y * 16 <= max.y
+                && (long) r.key.z * 16 + 15 >= min.z
+                && (long) r.key.z * 16 <= max.z) {
                 refreshSources(r, true);
             }
         }
@@ -546,12 +540,11 @@ public final class DimensionState implements AutoCloseable {
             for (Cell c : r.cells) {
                 if (c != null && c.geometry != null) {
                     BlockPos b = c.key.block(0);
-                    if ((long) b.x + 9 >= min.x
-                            && (long) b.x - 2 <= max.x
-                            && (long) b.y + 9 >= min.y
-                            && (long) b.y - 2 <= max.y
-                            && (long) b.z + 9 >= min.z
-                            && (long) b.z - 2 <= max.z) {
+                    if ((long) b.x + 9 >= min.x && (long) b.x - 2 <= max.x
+                        && (long) b.y + 9 >= min.y
+                        && (long) b.y - 2 <= max.y
+                        && (long) b.z + 9 >= min.z
+                        && (long) b.z - 2 <= max.z) {
                         dirty(c);
                     }
                 }
@@ -578,7 +571,9 @@ public final class DimensionState implements AutoCloseable {
                 for (int y = -2; y <= 2; y++) {
                     for (int x = -2; x <= 2; x++) {
                         if (Math.abs(x) + Math.abs(y) + Math.abs(z) <= 2) {
-                            dirty.add(p.offset(x, y, z).cell());
+                            dirty.add(
+                                p.offset(x, y, z)
+                                    .cell());
                         }
                     }
                 }
@@ -617,10 +612,7 @@ public final class DimensionState implements AutoCloseable {
 
     public void setSourceRate(BlockPos p, double rate) {
         Source old = sources.get(p);
-        int phase =
-                old == null
-                        ? (int) ((sources.size() * 2654435761L) % config.cyclePeriod)
-                        : old.phase;
+        int phase = old == null ? (int) ((sources.size() * 2654435761L) % config.cyclePeriod) : old.phase;
         setSourceRate(p, rate, phase);
     }
 
@@ -729,9 +721,7 @@ public final class DimensionState implements AutoCloseable {
 
     private void bindSource(Source source, ImmutableCubeSnapshot world) {
         source.ready = world != null;
-        source.air =
-                world != null
-                        && world.airAt(source.position.x, source.position.y, source.position.z);
+        source.air = world != null && world.airAt(source.position.x, source.position.y, source.position.z);
     }
 
     private void refreshSources(CubeRecord cube, boolean ready) {
@@ -746,24 +736,18 @@ public final class DimensionState implements AutoCloseable {
     }
 
     private double unaccounted(Source source) {
-        if (!source.ready
-                || (scheduleCycling
-                        && ((emissionWindows / config.cycleSteps + source.phase)
-                                        % config.cyclePeriod)
-                                >= config.cycleOn)) {
+        if (!source.ready || (scheduleCycling
+            && ((emissionWindows / config.cycleSteps + source.phase) % config.cyclePeriod) >= config.cycleOn)) {
             return 0;
         }
-        return source.rate
-                * Math.max(
-                        0, gameTime() - Math.max(emissionWindows * config.timeStep, source.stamp));
+        return source.rate * Math.max(0, gameTime() - Math.max(emissionWindows * config.timeStep, source.stamp));
     }
 
     private void settleSource(Source source) {
         double amount = unaccounted(source);
         if (source.air) {
             if (amount != 0) {
-                openAccepted.put(
-                        source.position, openAccepted.getOrDefault(source.position, 0.0) + amount);
+                openAccepted.put(source.position, openAccepted.getOrDefault(source.position, 0.0) + amount);
             }
         } else {
             openRejected += amount;
@@ -785,7 +769,8 @@ public final class DimensionState implements AutoCloseable {
             // Rates/readiness are settled only at changes and interval boundaries.
             // No per-source lookup, allocation or world scan in the other 19 ticks.
             if (rosterDirty) {
-                sourceRoster = sources.values().toArray(new Source[0]);
+                sourceRoster = sources.values()
+                    .toArray(new Source[0]);
                 rosterPositions = new BlockPos[sourceRoster.length];
                 for (int i = 0; i < sourceRoster.length; i++) {
                     rosterPositions[i] = sourceRoster[i].position;
@@ -801,20 +786,16 @@ public final class DimensionState implements AutoCloseable {
                 Source source = handles[i];
                 double amount;
                 if (source.stamp <= base) {
-                    boolean active =
-                            source.ready
-                                    && (!cycling
-                                            || ((emissionWindows / config.cycleSteps + source.phase)
-                                                            % config.cyclePeriod)
-                                                    < config.cycleOn);
+                    boolean active = source.ready
+                        && (!cycling || ((emissionWindows / config.cycleSteps + source.phase) % config.cyclePeriod)
+                            < config.cycleOn);
                     amount = active ? source.rate * config.timeStep : 0;
                 } else {
                     amount = unaccounted(source);
                 }
                 nonnegative(amount);
-                amounts[i] =
-                        (hasPartial ? openAccepted.getOrDefault(source.position, 0.0) : 0)
-                                + (source.air ? amount : 0);
+                amounts[i] = (hasPartial ? openAccepted.getOrDefault(source.position, 0.0) : 0)
+                    + (source.air ? amount : 0);
                 if (!source.air) {
                     openRejected += amount;
                 }
@@ -839,8 +820,7 @@ public final class DimensionState implements AutoCloseable {
             throw new IllegalArgumentException("Budget/parts");
         }
         if (scheduleParts != 0 && (scheduleParts != parts || scheduleCycling != cycling)) {
-            throw new IllegalStateException(
-                    "Fixed schedule required; use a new state to change parts");
+            throw new IllegalStateException("Fixed schedule required; use a new state to change parts");
         }
         scheduleParts = parts;
         scheduleCycling = cycling;
@@ -862,9 +842,7 @@ public final class DimensionState implements AutoCloseable {
         if (graph.isStepInProgress() || capture != null) {
             geometryMetrics.safeWindow(false);
         }
-        if (autoSavePath != null
-                && ticks % autoSaveTicks == 0
-                && (saveFuture == null || saveFuture.isDone())) {
+        if (autoSavePath != null && ticks % autoSaveTicks == 0 && (saveFuture == null || saveFuture.isDone())) {
             requestSave(autoSavePath);
         }
         return commit;
@@ -1001,8 +979,7 @@ public final class DimensionState implements AutoCloseable {
         lastSnapshotNanos = 0;
         long snapshotCpuStart = -1;
         boolean noEligibleWork = false;
-        boolean eligibleCall = !graph.isStepInProgress() && capture == null
-                && (savePath == null || writing);
+        boolean eligibleCall = !graph.isStepInProgress() && capture == null && (savePath == null || writing);
         int preparedAtStart = prepared.size();
         geometryMetrics.beginSafeCall(eligibleCall);
         if (eligibleCall) {
@@ -1095,10 +1072,8 @@ public final class DimensionState implements AutoCloseable {
                     maxPublishNanos = Math.max(maxPublishNanos, duration);
                     geometryMetrics.publish(duration);
                     geometryMetrics.publishedWait(
-                            b.cell.diagnosticQueuedTick < 0 ? -1
-                                    : Math.max(0, ticks - b.cell.diagnosticQueuedTick),
-                            b.cell.diagnosticPreparedTick < 0 ? -1
-                                    : Math.max(0, ticks - b.cell.diagnosticPreparedTick));
+                        b.cell.diagnosticQueuedTick < 0 ? -1 : Math.max(0, ticks - b.cell.diagnosticQueuedTick),
+                        b.cell.diagnosticPreparedTick < 0 ? -1 : Math.max(0, ticks - b.cell.diagnosticPreparedTick));
                     prepared.removeFirst();
                     b.cell.diagnosticQueuedTick = b.cell.diagnosticPreparedTick = -1;
                     b.cell.building = false;
@@ -1183,8 +1158,8 @@ public final class DimensionState implements AutoCloseable {
             geometryMetrics.safeWindow(false);
         }
         lastGeometryNanos = System.nanoTime() - start;
-        geometryMetrics.endSafeCall(lastGeometryNanos, budget, !noEligibleWork && budget > 0,
-                preparedAtStart, prepared.size());
+        geometryMetrics
+            .endSafeCall(lastGeometryNanos, budget, !noEligibleWork && budget > 0, preparedAtStart, prepared.size());
         geometryMetrics.geometry(lastGeometryNanos, geometryPending() || savePath != null);
         if (budget > 0 && lastGeometryNanos > budget) {
             budgetOverruns++;
@@ -1211,8 +1186,7 @@ public final class DimensionState implements AutoCloseable {
         if (phase == GeometryMetrics.PARTITION && b.diagnosticStage() != phase) {
             geometryMetrics.partitionsCompleted++;
             geometryMetrics.partitionNodes += b.local.count;
-            geometryMetrics.maxPartitionNodes =
-                    Math.max(geometryMetrics.maxPartitionNodes, b.local.count);
+            geometryMetrics.maxPartitionNodes = Math.max(geometryMetrics.maxPartitionNodes, b.local.count);
         }
         if (phase == GeometryMetrics.EXTERNAL_CONTACTS && b.ready) {
             geometryMetrics.cellsPrepared++;
@@ -1284,8 +1258,8 @@ public final class DimensionState implements AutoCloseable {
                 if (local < 0 || graph.nodeMass(c.geometry.ids[local]) <= 0) {
                     continue;
                 }
-                BlockPos q =
-                        c.key.block(p).offset(CellBuild.DX[d], CellBuild.DY[d], CellBuild.DZ[d]);
+                BlockPos q = c.key.block(p)
+                    .offset(CellBuild.DX[d], CellBuild.DY[d], CellBuild.DZ[d]);
                 if (world.airAt(q.x, q.y, q.z)) {
                     requestBuild(neighbor);
                     break;
@@ -1330,8 +1304,7 @@ public final class DimensionState implements AutoCloseable {
             graph.sparseBoundary(id, b.boundary[i]);
         }
         if (old != null) {
-            int[] survivors = new int[old.masses.length],
-                    representative = new int[old.masses.length];
+            int[] survivors = new int[old.masses.length], representative = new int[old.masses.length];
             for (int p = 0; p < 512; p++) {
                 int a = old.labels[p];
                 if (a >= 0) {
@@ -1355,8 +1328,8 @@ public final class DimensionState implements AutoCloseable {
                 }
             }
         }
-        for (Iterator<Map.Entry<Integer, Double>> it = c.trapped.entrySet().iterator();
-                it.hasNext(); ) {
+        for (Iterator<Map.Entry<Integer, Double>> it = c.trapped.entrySet()
+            .iterator(); it.hasNext();) {
             Map.Entry<Integer, Double> e = it.next();
             int local = g.labels[e.getKey()];
             if (local >= 0) {
@@ -1373,10 +1346,8 @@ public final class DimensionState implements AutoCloseable {
         c.cube.epoch = self.epoch;
         c.cube.revision = self.revision;
         b.edges.appendTo(
-                config,
-                (a, z, k) ->
-                        graph.addEdge(
-                                a < 512 ? g.ids[a] : a - 512, z < 512 ? g.ids[z] : z - 512, k));
+            config,
+            (a, z, k) -> graph.addEdge(a < 512 ? g.ids[a] : a - 512, z < 512 ? g.ids[z] : z - 512, k));
         generation++;
         publications++;
         refreshFrontMask(c);
@@ -1484,9 +1455,7 @@ public final class DimensionState implements AutoCloseable {
     }
 
     public double gameTime() {
-        return config.timeStep
-                * (emissionWindows
-                        + (scheduleParts == 0 ? 0 : (double) windowTick / scheduleParts));
+        return config.timeStep * (emissionWindows + (scheduleParts == 0 ? 0 : (double) windowTick / scheduleParts));
     }
 
     public double modelTime() {
@@ -1535,11 +1504,9 @@ public final class DimensionState implements AutoCloseable {
         Cell first = builds.peekFirst();
         CellBuild firstPrepared = prepared.peekFirst();
         return new long[] {
-            first == null || first.diagnosticQueuedTick < 0 ? -1
-                    : Math.max(0, ticks - first.diagnosticQueuedTick),
+            first == null || first.diagnosticQueuedTick < 0 ? -1 : Math.max(0, ticks - first.diagnosticQueuedTick),
             firstPrepared == null || firstPrepared.cell.diagnosticPreparedTick < 0 ? -1
-                    : Math.max(0, ticks - firstPrepared.cell.diagnosticPreparedTick)
-        };
+                : Math.max(0, ticks - firstPrepared.cell.diagnosticPreparedTick) };
     }
 
     /** Read-only availability, independent of the legacy numeric sample() contract. */
@@ -1553,8 +1520,7 @@ public final class DimensionState implements AutoCloseable {
     public long sampleQueueAgeTicks(BlockPos point) {
         check(point.dimension);
         Cell c = cell(point.cell(), false);
-        return c == null || c.diagnosticQueuedTick < 0 ? -1
-                : Math.max(0, ticks - c.diagnosticQueuedTick);
+        return c == null || c.diagnosticQueuedTick < 0 ? -1 : Math.max(0, ticks - c.diagnosticQueuedTick);
     }
 
     /** O(1) queue overview; pending work is not necessarily runnable right now. */
@@ -1596,6 +1562,7 @@ public final class DimensionState implements AutoCloseable {
     }
 
     public static final class GeometryFootprint {
+
         public int registeredCubes, readyCubes, activeCubes, parkedOnlyCubes;
         public int allocatedCells, activeCells, parkedCells;
     }
@@ -1613,7 +1580,8 @@ public final class DimensionState implements AutoCloseable {
                     }
                     for (int p = 0; p < 512; p++) {
                         if (g.labels[p] >= 0) {
-                            b[g.labels[p]].append(p).append(',');
+                            b[g.labels[p]].append(p)
+                                .append(',');
                         }
                     }
                     for (int i = 0; i < b.length; i++) {
@@ -1669,7 +1637,8 @@ public final class DimensionState implements AutoCloseable {
         if (saveFuture != null && !saveFuture.isDone()) {
             throw new IllegalStateException("Save already pending");
         }
-        savePath = path.toAbsolutePath().normalize();
+        savePath = path.toAbsolutePath()
+            .normalize();
         saveFuture = new CompletableFuture<>();
         saveParticipant = participant;
         captureCpuNanos = 0;
@@ -1723,52 +1692,47 @@ public final class DimensionState implements AutoCloseable {
         captureWallNanos = System.nanoTime() - captureStarted;
         writing = true;
         savePath = null;
-        writer.execute(
-                () -> {
-                    long start = System.nanoTime();
-                    java.lang.management.ThreadMXBean cpu =
-                            java.lang.management.ManagementFactory.getThreadMXBean();
-                    long cpuStart =
-                            cpu.isCurrentThreadCpuTimeSupported()
-                                    ? cpu.getCurrentThreadCpuTime()
-                                    : -1;
-                    Throwable failure = null;
-                    try {
-                        if (attachment != null) {
-                            attachment.beforeWrite();
-                        }
-                        long gen = Checkpoint.write(path, data, expected);
-                        if (attachment != null) {
-                            attachment.commit(path);
-                        }
-                        synchronized (this) {
-                            diskPath = path;
-                            diskGeneration = gen;
-                        }
-                    } catch (Throwable e) {
-                        failure = e;
-                    } finally {
-                        ioNanos += System.nanoTime() - start;
-                        if (cpuStart >= 0 && ioCpuNanos >= 0) {
-                            ioCpuNanos += cpu.getCurrentThreadCpuTime() - cpuStart;
-                        } else {
-                            ioCpuNanos = -1;
-                        }
-                        writing = false;
-                    }
-                    if (failure == null) {
-                        future.complete(path);
-                    } else {
-                        future.completeExceptionally(failure);
-                    }
-                });
+        writer.execute(() -> {
+            long start = System.nanoTime();
+            java.lang.management.ThreadMXBean cpu = java.lang.management.ManagementFactory.getThreadMXBean();
+            long cpuStart = cpu.isCurrentThreadCpuTimeSupported() ? cpu.getCurrentThreadCpuTime() : -1;
+            Throwable failure = null;
+            try {
+                if (attachment != null) {
+                    attachment.beforeWrite();
+                }
+                long gen = Checkpoint.write(path, data, expected);
+                if (attachment != null) {
+                    attachment.commit(path);
+                }
+                synchronized (this) {
+                    diskPath = path;
+                    diskGeneration = gen;
+                }
+            } catch (Throwable e) {
+                failure = e;
+            } finally {
+                ioNanos += System.nanoTime() - start;
+                if (cpuStart >= 0 && ioCpuNanos >= 0) {
+                    ioCpuNanos += cpu.getCurrentThreadCpuTime() - cpuStart;
+                } else {
+                    ioCpuNanos = -1;
+                }
+                writing = false;
+            }
+            if (failure == null) {
+                future.complete(path);
+            } else {
+                future.completeExceptionally(failure);
+            }
+        });
     }
 
-    public static DimensionState load(Path path, WorldSnapshotProvider provider)
-            throws IOException {
+    public static DimensionState load(Path path, WorldSnapshotProvider provider) throws IOException {
         Checkpoint.Loaded loaded = Checkpoint.read(path);
         DimensionState s = Checkpoint.restore(loaded.data, provider);
-        s.diskPath = path.toAbsolutePath().normalize();
+        s.diskPath = path.toAbsolutePath()
+            .normalize();
         s.diskGeneration = loaded.generation;
         return s;
     }

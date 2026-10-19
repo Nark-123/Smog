@@ -14,6 +14,7 @@ public final class SpatialQueries {
     }
 
     public static final class ChunkMassBatch {
+
         public final Map<Long, Double> masses;
 
         public final long cubeVisits;
@@ -114,8 +115,8 @@ public final class SpatialQueries {
                         }
                         seen[label] = true;
                         state.queueRemoveMass(
-                                cell.key.block(voxel),
-                                state.graph.nodeMass(cell.geometry.ids[label]) * fraction);
+                            cell.key.block(voxel),
+                            state.graph.nodeMass(cell.geometry.ids[label]) * fraction);
                     }
                 }
                 if (cell.parked != null) {

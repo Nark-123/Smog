@@ -20,13 +20,15 @@ import smog.WorldSnapshotProvider;
  */
 public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
+    private static final int SECTION_COUNT = 16;
+
     private static final class Column {
 
         final Chunk chunk;
-
         final long epoch;
-
-        long revision;
+        // Exact vertical-section revisions; no false invalidation at other heights.
+        final long[] revisions = new long[SECTION_COUNT];
+        final ImmutableCubeSnapshot[] snapshots = new ImmutableCubeSnapshot[SECTION_COUNT];
 
         Column(Chunk chunk, long epoch) {
             this.chunk = chunk;
@@ -42,7 +44,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
     private final Map<Long, Column> columns = new HashMap<>();
 
-    private final Map<CubeKey, ImmutableCubeSnapshot> snapshots = new HashMap<>();
+    private int cachedSnapshots;
 
     /** Owner-thread-only diagnostic counters; no persistent data or per-block timers. */
     private final Diagnostics diagnostics = new Diagnostics();
@@ -77,7 +79,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
 
     public int cachedSnapshotCount() {
         checkThread();
-        return snapshots.size();
+        return cachedSnapshots;
     }
 
     public ForgeWorldSnapshotProvider(int dimension) {
@@ -97,40 +99,119 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     public void load(Chunk chunk) {
         checkThread();
         diagnostics.loads++;
-        Column old = columns.get(key(chunk.xPosition, chunk.zPosition));
+        long k = key(chunk.xPosition, chunk.zPosition);
+        Column old = columns.get(k);
         if (old != null && old.chunk == chunk) {
             return;
         }
-        columns.put(key(chunk.xPosition, chunk.zPosition), new Column(chunk, ++nextEpoch));
-        discard(chunk.xPosition, chunk.zPosition);
+        long started = System.nanoTime();
+        if (old != null) {
+            dropSnapshots(old);
+        }
+        columns.put(k, new Column(chunk, ++nextEpoch));
+        recordInvalidation(started);
     }
 
     public long unload(int x, int z) {
         checkThread();
         diagnostics.unloads++;
+        long started = System.nanoTime();
         Column old = columns.remove(key(x, z));
-        discard(x, z);
+        if (old != null) {
+            dropSnapshots(old);
+        }
+        recordInvalidation(started);
         return old == null ? nextEpoch : old.epoch;
     }
 
+    /**
+     * Compatibility entry point for callers that do not know the Y coordinate.
+     * The runtime uses reviseBlock/reviseRange so normal edits remain local.
+     */
     public void revise(int x, int z) {
         checkThread();
         diagnostics.revisions++;
         Column column = columns.get(key(x, z));
-        if (column != null) {
-            column.revision++;
-            discard(x, z);
+        if (column == null) {
+            return;
+        }
+        long started = System.nanoTime();
+        for (int y = 0; y < SECTION_COUNT; y++) {
+            expireSection(column, y);
+        }
+        recordInvalidation(started);
+    }
+
+    /** Invalidates exactly the changed section and upper door-dependent section. */
+    public void reviseBlock(int worldX, int worldY, int worldZ) {
+        checkThread();
+        diagnostics.revisions++;
+        if (worldY < 0 || worldY >= 256) {
+            return;
+        }
+        Column column = columns.get(key(worldX >> 4, worldZ >> 4));
+        if (column == null) {
+            return;
+        }
+        long started = System.nanoTime();
+        int section = worldY >> 4;
+        expireSection(column, section);
+        // The upper half of a door reads metadata from y - 1, even across 16^3 cubes.
+        if ((worldY & 15) == 15 && section + 1 < SECTION_COUNT) {
+            expireSection(column, section + 1);
+        }
+        recordInvalidation(started);
+    }
+
+    /** Inclusive world-space Y interval, bounded to Minecraft's 0..255. */
+    public void reviseRange(int columnX, int columnZ, int minY, int maxY) {
+        checkThread();
+        if (minY > maxY) {
+            throw new IllegalArgumentException("Reversed Y range");
+        }
+        diagnostics.revisions++;
+        int lower = Math.max(0, minY), upper = Math.min(255, maxY);
+        if (lower > upper) {
+            return;
+        }
+        Column column = columns.get(key(columnX, columnZ));
+        if (column == null) {
+            return;
+        }
+        long started = System.nanoTime();
+        int lastSection = upper >> 4;
+        // Only an edit to the last block of a section influences the section above.
+        if ((upper & 15) == 15 && lastSection < SECTION_COUNT - 1) {
+            lastSection++;
+        }
+        for (int section = lower >> 4; section <= lastSection; section++) {
+            expireSection(column, section);
+        }
+        recordInvalidation(started);
+    }
+
+    private void expireSection(Column column, int section) {
+        column.revisions[section]++;
+        if (column.snapshots[section] != null) {
+            column.snapshots[section] = null;
+            cachedSnapshots--;
+            diagnostics.evictedSnapshots++;
         }
     }
 
-    private void discard(int x, int z) {
-        long start = System.nanoTime();
-        int before = snapshots.size();
-        snapshots.keySet()
-            .removeIf(c -> c.x == x && c.z == z);
-        long duration = System.nanoTime() - start;
+    private void dropSnapshots(Column column) {
+        for (int section = 0; section < SECTION_COUNT; section++) {
+            if (column.snapshots[section] != null) {
+                column.snapshots[section] = null;
+                cachedSnapshots--;
+                diagnostics.evictedSnapshots++;
+            }
+        }
+    }
+
+    private void recordInvalidation(long started) {
+        long duration = System.nanoTime() - started;
         diagnostics.invalidations++;
-        diagnostics.evictedSnapshots += before - snapshots.size();
         diagnostics.invalidateNanos += duration;
         diagnostics.maxInvalidateNanos = Math.max(diagnostics.maxInvalidateNanos, duration);
     }
@@ -138,16 +219,37 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     @Override
     public boolean isReady(CubeKey cube) {
         checkThread();
-        return cube.dimension == dimension && cube.y >= 0 && cube.y < 16 && columns.containsKey(key(cube.x, cube.z));
+        return cube.dimension == dimension && cube.y >= 0
+            && cube.y < SECTION_COUNT
+            && columns.containsKey(key(cube.x, cube.z));
+    }
+
+    @Override
+    public boolean matchesSnapshot(CubeKey cube, ImmutableCubeSnapshot captured) {
+        checkThread();
+        if (cube.dimension != dimension || cube.y < 0 || cube.y >= SECTION_COUNT) {
+            return captured == null;
+        }
+        Column column = columns.get(key(cube.x, cube.z));
+        if (column == null) {
+            return captured == null;
+        }
+        return captured != null && cube.equals(captured.key)
+            && captured.epoch == column.epoch
+            && captured.revision == column.revisions[cube.y];
     }
 
     @Override
     public ImmutableCubeSnapshot snapshotIfReady(CubeKey cube) {
-        if (!isReady(cube)) {
+        checkThread();
+        Column column = cube.dimension == dimension && cube.y >= 0 && cube.y < SECTION_COUNT
+            ? columns.get(key(cube.x, cube.z))
+            : null;
+        if (column == null) {
             diagnostics.unavailable++;
             return null;
         }
-        ImmutableCubeSnapshot cached = snapshots.get(cube);
+        ImmutableCubeSnapshot cached = column.snapshots[cube.y];
         if (cached != null) {
             diagnostics.hits++;
             return cached;
@@ -155,7 +257,6 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
         diagnostics.misses++;
         long buildStart = System.nanoTime();
         try {
-            Column column = columns.get(key(cube.x, cube.z));
             byte[] air = new byte[4096];
             byte[] atmosphere = new byte[4096];
             for (int y = 0; y < 16; y++) {
@@ -183,8 +284,9 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
                     }
                 }
             }
-            cached = new ImmutableCubeSnapshot(cube, column.epoch, column.revision, air, atmosphere);
-            snapshots.put(cube, cached);
+            cached = new ImmutableCubeSnapshot(cube, column.epoch, column.revisions[cube.y], air, atmosphere);
+            column.snapshots[cube.y] = cached;
+            cachedSnapshots++;
             return cached;
         } catch (RuntimeException error) {
             diagnostics.buildFailures++;

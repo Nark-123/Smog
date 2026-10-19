@@ -1,8 +1,5 @@
 package smog;
 
-import org.smogmod.compat.gt5u.PendingPulse;
-import org.smogmod.persistence.WorldStore;
-
 import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -16,8 +13,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.smogmod.compat.gt5u.PendingPulse;
+import org.smogmod.persistence.WorldStore;
+
 /** Bounded deterministic regression tests. No Minecraft initialization or random input. */
 public final class PerformanceFixTests {
+
     private static void check(boolean condition, String message) {
         if (!condition) {
             throw new AssertionError(message);
@@ -31,7 +32,8 @@ public final class PerformanceFixTests {
     }
 
     private static long cpu() {
-        return ManagementFactory.getThreadMXBean().getCurrentThreadCpuTime();
+        return ManagementFactory.getThreadMXBean()
+            .getCurrentThreadCpuTime();
     }
 
     private static DimensionState fresh(int dimension, SparseTests.World world) {
@@ -40,8 +42,7 @@ public final class PerformanceFixTests {
 
     private static void finishCapture(DimensionState state) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-        while (!"WRITING".equals(state.checkpointPhase())
-                && !"IDLE".equals(state.checkpointPhase())) {
+        while (!"WRITING".equals(state.checkpointPhase()) && !"IDLE".equals(state.checkpointPhase())) {
             check(System.nanoTime() < deadline, "Capture did not progress before deadline");
             state.geometry(200000L);
             if ("REQUESTED".equals(state.checkpointPhase())) {
@@ -76,16 +77,16 @@ public final class PerformanceFixTests {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         ExecutorService writer = writer(state);
-        writer.submit(
-                () -> {
-                    entered.countDown();
-                    try {
-                        check(release.await(5, TimeUnit.SECONDS), "Test I/O gate timeout");
-                    } catch (InterruptedException exception) {
-                        Thread.currentThread().interrupt();
-                        throw new AssertionError(exception);
-                    }
-                });
+        writer.submit(() -> {
+            entered.countDown();
+            try {
+                check(release.await(5, TimeUnit.SECONDS), "Test I/O gate timeout");
+            } catch (InterruptedException exception) {
+                Thread.currentThread()
+                    .interrupt();
+                throw new AssertionError(exception);
+            }
+        });
         check(entered.await(1, TimeUnit.SECONDS), "I/O gate did not start");
         try {
             store.markDirty();
@@ -124,58 +125,44 @@ public final class PerformanceFixTests {
             check(store.coalesced >= 240, "Requests did not coalesce");
             release.countDown();
             writer.submit(() -> {})
-                    .get(3, TimeUnit.SECONDS); // Test barrier after real durable commit.
+                .get(3, TimeUnit.SECONDS); // Test barrier after real durable commit.
             List<PendingPulse> restoredQueue = new ArrayList<>();
             DimensionState restored = new WorldStore(path).load(7, world, restoredQueue);
-            SparseTests.near(
-                    restored.generatedMass(), cutGenerated, 1e-12, "Core changed across SAFE CUT");
-            check(
-                    restored.gameTicks() == cutTicks && restored.windowTick == cutPhase,
-                    "Partial emission phase");
+            SparseTests.near(restored.generatedMass(), cutGenerated, 1e-12, "Core changed across SAFE CUT");
+            check(restored.gameTicks() == cutTicks && restored.windowTick == cutPhase, "Partial emission phase");
             check(restored.sources.size() == 1, "Source missing");
             check(
-                    restoredQueue.size() == 1
-                            && restoredQueue.get(0).amount == 125
-                            && restoredQueue.get(0).adjacent,
-                    "Pending snapshot not from SAFE CUT");
+                restoredQueue.size() == 1 && restoredQueue.get(0).amount == 125 && restoredQueue.get(0).adjacent,
+                "Pending snapshot not from SAFE CUT");
             SparseTests.near(
-                    restored.generatedMass() + restoredQueue.get(0).amount,
-                    cutGenerated + 125,
-                    1e-12,
-                    "Exactly-once core + pending");
+                restored.generatedMass() + restoredQueue.get(0).amount,
+                cutGenerated + 125,
+                1e-12,
+                "Exactly-once core + pending");
             restored.close();
             store.saveAndAwaitForShutdown(state, queue, 5000);
             check(store.completed == 2, "Backlog must be one follow-up, not one per request");
-            String before =
-                    new String(
-                            Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII);
+            String before = new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII);
             store.saveAndAwaitForShutdown(state, queue, 5000);
             check(
-                    before.equals(
-                            new String(
-                                    Files.readAllBytes(path.resolve("CURRENT")),
-                                    StandardCharsets.US_ASCII)),
-                    "Unchanged shutdown made a duplicate checkpoint");
+                before.equals(new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII)),
+                "Unchanged shutdown made a duplicate checkpoint");
             restoredQueue.clear();
             restored = new WorldStore(path).load(7, world, restoredQueue);
-            check(
-                    restoredQueue.size() == 1 && restoredQueue.get(0).amount == 777,
-                    "Final pending queue");
-            SparseTests.near(
-                    restored.generatedMass(), state.generatedMass(), 1e-12, "Final core state");
+            check(restoredQueue.size() == 1 && restoredQueue.get(0).amount == 777, "Final pending queue");
+            SparseTests.near(restored.generatedMass(), state.generatedMass(), 1e-12, "Final core state");
             SparseTests.near(restored.balanceError(), 0, 1e-12, "Restored balance");
             restored.close();
             System.out.println(
-                    "ASYNC_METRICS requestWallNs="
-                            + requestNanos
-                            + " ticks=120 wallNs="
-                            + tickWall
-                            + " cpuNs="
-                            + tickCpu
-                            + " maxTickNs="
-                            + maxTick
-                            + " blockedIo=true commits="
-                            + store.completed);
+                "ASYNC_METRICS requestWallNs=" + requestNanos
+                    + " ticks=120 wallNs="
+                    + tickWall
+                    + " cpuNs="
+                    + tickCpu
+                    + " maxTickNs="
+                    + maxTick
+                    + " blockedIo=true commits="
+                    + store.completed);
         } finally {
             release.countDown();
             state.close();
@@ -208,14 +195,14 @@ public final class PerformanceFixTests {
         state.geometry(50000L);
         check("REQUESTED".equals(state.checkpointPhase()), "Snapshot cut a partial physical step");
         store.saveAndAwaitForShutdown(state, queue, 5000);
-        String current =
-                new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII);
-        String previous =
-                new String(Files.readAllBytes(path.resolve("PREVIOUS")), StandardCharsets.US_ASCII);
+        String current = new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII);
+        String previous = new String(Files.readAllBytes(path.resolve("PREVIOUS")), StandardCharsets.US_ASCII);
         check(!current.equals(previous), "Previous must be a distinct durable bundle");
         check(
-                Files.exists(path.resolve(previous).resolve("core/manifest")),
-                "Previous bundle missing");
+            Files.exists(
+                path.resolve(previous)
+                    .resolve("core/manifest")),
+            "Previous bundle missing");
         // Cancel an incremental capture by unload and retry with a new paired queue copy.
         for (int i = 0; i < 4000; i++) {
             CubeKey key = new CubeKey(9, 100 + i, 0, 100);
@@ -233,41 +220,42 @@ public final class PerformanceFixTests {
         List<PendingPulse> loaded = new ArrayList<>();
         DimensionState restored = new WorldStore(path).load(9, world, loaded);
         check(
-                loaded.size() == 1 && loaded.get(0).amount == -12 && loaded.get(0).chunkOnly,
-                "Retried snapshot did not refresh negative pending event");
-        SparseTests.near(
-                restored.generatedMass(), state.generatedMass(), 1e-12, "Unload restored total");
+            loaded.size() == 1 && loaded.get(0).amount == -12 && loaded.get(0).chunkOnly,
+            "Retried snapshot did not refresh negative pending event");
+        SparseTests.near(restored.generatedMass(), state.generatedMass(), 1e-12, "Unload restored total");
         restored.close();
-        String good =
-                new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII);
+        String good = new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII);
         // Fail after writing both payloads and before changing CURRENT.
         Files.createDirectory(path.resolve("CURRENT.tmp"));
         store.markDirty();
         store.save(state, queue);
         finishCapture(state);
-        writer(state).submit(() -> {}).get(3, TimeUnit.SECONDS);
+        writer(state).submit(() -> {})
+            .get(3, TimeUnit.SECONDS);
         store.pollSaveCompletion();
-        check(store.status().contains("save=FAILED"), "Disk failure not visible");
         check(
-                good.equals(
-                        new String(
-                                Files.readAllBytes(path.resolve("CURRENT")),
-                                StandardCharsets.US_ASCII)),
-                "Failed commit replaced valid current");
+            store.status()
+                .contains("save=FAILED"),
+            "Disk failure not visible");
+        check(
+            good.equals(new String(Files.readAllBytes(path.resolve("CURRENT")), StandardCharsets.US_ASCII)),
+            "Failed commit replaced valid current");
         restored = new WorldStore(path).load(9, world, new ArrayList<PendingPulse>());
         restored.close();
         Files.delete(path.resolve("CURRENT.tmp"));
         // A corrupt queue or corrupt core must each fall back to the real previous bundle.
-        Path pending = path.resolve(good).resolve("pending.bin");
+        Path pending = path.resolve(good)
+            .resolve("pending.bin");
         byte[] validPending = Files.readAllBytes(pending);
-        Files.write(pending, new byte[] {0});
+        Files.write(pending, new byte[] { 0 });
         loaded.clear();
         restored = new WorldStore(path).load(9, world, loaded);
         restored.close();
         Files.write(pending, validPending);
-        Path core = path.resolve(good).resolve("core/generation-1.smog");
+        Path core = path.resolve(good)
+            .resolve("core/generation-1.smog");
         byte[] validCore = Files.readAllBytes(core);
-        Files.write(core, new byte[] {0});
+        Files.write(core, new byte[] { 0 });
         restored = new WorldStore(path).load(9, world, new ArrayList<PendingPulse>());
         restored.close();
         Files.write(core, validCore);
@@ -276,7 +264,7 @@ public final class PerformanceFixTests {
     }
 
     private static void shutdownTimeoutAndDimensions() throws Exception {
-        for (int dimension : new int[] {-1, 0, 7}) {
+        for (int dimension : new int[] { -1, 0, 7 }) {
             SparseTests.World world = new SparseTests.World();
             DimensionState state = fresh(dimension, world);
             Path path = Files.createTempDirectory("smog-lifecycle-");
@@ -295,8 +283,8 @@ public final class PerformanceFixTests {
             List<PendingPulse> restored = new ArrayList<>();
             state = new WorldStore(path).load(dimension, world, restored);
             check(
-                    restored.size() == 1 && restored.get(0).position.dimension == dimension,
-                    "Dimension pending state crossed worlds");
+                restored.size() == 1 && restored.get(0).position.dimension == dimension,
+                "Dimension pending state crossed worlds");
             check(state.gameTicks() == 1, "Final shutdown checkpoint missed latest phase");
             state.close();
         }
@@ -304,14 +292,13 @@ public final class PerformanceFixTests {
         DimensionState state = fresh(3, world);
         ExecutorService io = writer(state);
         CountDownLatch release = new CountDownLatch(1);
-        io.submit(
-                () -> {
-                    try {
-                        check(release.await(3, TimeUnit.SECONDS), "Timeout fixture gate");
-                    } catch (InterruptedException exception) {
-                        throw new AssertionError(exception);
-                    }
-                });
+        io.submit(() -> {
+            try {
+                check(release.await(3, TimeUnit.SECONDS), "Timeout fixture gate");
+            } catch (InterruptedException exception) {
+                throw new AssertionError(exception);
+            }
+        });
         WorldStore store = new WorldStore(Files.createTempDirectory("smog-timeout-"));
         List<PendingPulse> queue = new ArrayList<>();
         long start = System.nanoTime();
@@ -319,13 +306,12 @@ public final class PerformanceFixTests {
             store.saveAndAwaitForShutdown(state, queue, 30);
             throw new AssertionError("Shutdown failed to enforce I/O timeout");
         } catch (java.util.concurrent.TimeoutException expected) {
-            check(
-                    System.nanoTime() - start < TimeUnit.SECONDS.toNanos(1),
-                    "Shutdown timeout unbounded");
+            check(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(1), "Shutdown timeout unbounded");
         } finally {
             release.countDown();
         }
-        io.submit(() -> {}).get(1, TimeUnit.SECONDS);
+        io.submit(() -> {})
+            .get(1, TimeUnit.SECONDS);
         store.saveAndAwaitForShutdown(state, queue, 1000);
         state.close();
         check(io.awaitTermination(1, TimeUnit.SECONDS), "Timeout recovery leaked writer");
@@ -344,14 +330,12 @@ public final class PerformanceFixTests {
             for (int z = -12; z <= 12; z++) {
                 keys.add(SpatialQueries.chunkKey(x, z));
                 for (int y = -1; y <= 3; y++) {
-                    DimensionState.Cell cell =
-                            state.cell(new CellKey(4, x * 2, y * 2, z * 2), true);
+                    DimensionState.Cell cell = state.cell(new CellKey(4, x * 2, y * 2, z * 2), true);
                     int[] labels = new int[512];
-                    cell.parked =
-                            new DimensionState.MassRecord(
-                                    labels,
-                                    new int[] {512},
-                                    new double[] {((x + 12) * 25 + z + 12) * 1000.125 + y + 2});
+                    cell.parked = new DimensionState.MassRecord(
+                        labels,
+                        new int[] { 512 },
+                        new double[] { ((x + 12) * 25 + z + 12) * 1000.125 + y + 2 });
                     cell.trapped.put(0, (x + 12) * .03125);
                 }
             }
@@ -362,29 +346,25 @@ public final class PerformanceFixTests {
         state.graph.setVolume(id, 512);
         state.graph.addNodeMass(id, .999999999999);
         live.geometry = new DimensionState.Geometry();
-        live.geometry.ids = new int[] {id};
+        live.geometry.ids = new int[] { id };
         long reads = world.reads;
         keys.add(SpatialQueries.chunkKey(100000, -100000));
         keys.add(SpatialQueries.chunkKey(Integer.MIN_VALUE, Integer.MAX_VALUE));
-        check(
-                SpatialQueries.chunkKey(-1, 0) != SpatialQueries.chunkKey(0, -1),
-                "Signed key collision");
+        check(SpatialQueries.chunkKey(-1, 0) != SpatialQueries.chunkKey(0, -1), "Signed key collision");
         SpatialQueries.ChunkMassBatch batch = SpatialQueries.chunkMasses(state, keys);
         for (long key : keys) {
             double old = SpatialQueries.chunkMass(state, (int) (key >> 32), (int) key);
             check(
-                    Double.doubleToLongBits(old) == Double.doubleToLongBits(batch.masses.get(key)),
-                    "Batched sum changed floating-point addition order");
+                Double.doubleToLongBits(old) == Double.doubleToLongBits(batch.masses.get(key)),
+                "Batched sum changed floating-point addition order");
             check(clamp(old) == clamp(batch.masses.get(key)), "Client clamp changed");
         }
         check(world.reads == reads, "Query loaded geometry");
         check(batch.cubeVisits == 3125, "Expected exactly one cube traversal");
-        check(
-                SpatialQueries.chunkMasses(state, new HashSet<Long>()).cubeVisits == 0,
-                "Empty batch scanned graph");
+        check(SpatialQueries.chunkMasses(state, new HashSet<Long>()).cubeVisits == 0, "Empty batch scanned graph");
         // The exact old/new packet-change predicate, including the transition to zero.
         List<Integer> previous = new ArrayList<>(Arrays.asList(0, 3, 8));
-        int[] next = {1, 3, 0};
+        int[] next = { 1, 3, 0 };
         int oldPackets = 0, newPackets = 0;
         for (int player = 0; player < 3; player++) {
             for (int i = 0; i < next.length; i++) {
@@ -401,11 +381,7 @@ public final class PerformanceFixTests {
             measureQueries(state, keys, false);
         }
         measureQueries(state, keys, true);
-        System.out.println(
-                "BATCH_QUERY_BIT_EXACT_PASS cubes="
-                        + state.cubeCount()
-                        + " columns="
-                        + keys.size());
+        System.out.println("BATCH_QUERY_BIT_EXACT_PASS cubes=" + state.cubeCount() + " columns=" + keys.size());
         state.close();
     }
 
@@ -415,9 +391,11 @@ public final class PerformanceFixTests {
         try {
             Class<?> type = Class.forName("com.sun.management.ThreadMXBean");
             Object bean = ManagementFactory.getThreadMXBean();
-            return (Long)
-                    type.getMethod("getThreadAllocatedBytes", long.class)
-                            .invoke(bean, Thread.currentThread().getId());
+            return (Long) type.getMethod("getThreadAllocatedBytes", long.class)
+                .invoke(
+                    bean,
+                    Thread.currentThread()
+                        .getId());
         } catch (ReflectiveOperationException unavailable) {
             return -1;
         }
@@ -443,22 +421,21 @@ public final class PerformanceFixTests {
         consume = sum;
         if (report) {
             System.out.println(
-                    "QUERY_METRICS oldVisits="
-                            + (long) keys.size() * state.cubeCount()
-                            + " newVisits="
-                            + batch.cubeVisits
-                            + " oldWallNs="
-                            + oldWall
-                            + " newWallNs="
-                            + newWall
-                            + " oldCpuNs="
-                            + oldCpu
-                            + " newCpuNs="
-                            + newCpu
-                            + " oldAllocatedBytes="
-                            + oldBytes
-                            + " newAllocatedBytes="
-                            + newBytes);
+                "QUERY_METRICS oldVisits=" + (long) keys.size() * state.cubeCount()
+                    + " newVisits="
+                    + batch.cubeVisits
+                    + " oldWallNs="
+                    + oldWall
+                    + " newWallNs="
+                    + newWall
+                    + " oldCpuNs="
+                    + oldCpu
+                    + " newCpuNs="
+                    + newCpu
+                    + " oldAllocatedBytes="
+                    + oldBytes
+                    + " newAllocatedBytes="
+                    + newBytes);
         }
     }
 

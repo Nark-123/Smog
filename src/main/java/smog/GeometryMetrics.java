@@ -51,8 +51,7 @@ public final class GeometryMetrics {
         recordingSafeCall = eligible;
     }
 
-    void endSafeCall(long elapsed, long budget, boolean budgetEnded,
-            int preparedStart, int preparedEnd) {
+    void endSafeCall(long elapsed, long budget, boolean budgetEnded, int preparedStart, int preparedEnd) {
         if (recordingSafeCall) {
             safeTotals[SAFE_CALLS]++;
             safeTotals[SAFE_ELAPSED_NANOS] += elapsed;
@@ -193,8 +192,7 @@ public final class GeometryMetrics {
             queueWaitSamples++;
             queueWaitTotalTicks += queueTicks;
             queueWaitMaxTicks = Math.max(queueWaitMaxTicks, queueTicks);
-            int bucket = queueTicks <= 20 ? 0 : queueTicks <= 100 ? 1
-                    : queueTicks <= 600 ? 2 : 3;
+            int bucket = queueTicks <= 20 ? 0 : queueTicks <= 100 ? 1 : queueTicks <= 600 ? 2 : 3;
             queueWaitBuckets[bucket]++;
         }
         if (preparedTicks >= 0) {
@@ -208,8 +206,7 @@ public final class GeometryMetrics {
         safeWindowPublishTotal++;
         if (safeWindowOpen) {
             safeWindowCurrentPublished++;
-            safeWindowMaxPublished = Math.max(safeWindowMaxPublished,
-                    safeWindowCurrentPublished);
+            safeWindowMaxPublished = Math.max(safeWindowMaxPublished, safeWindowCurrentPublished);
         }
         publishCalls++;
         publishNanos += nanos;

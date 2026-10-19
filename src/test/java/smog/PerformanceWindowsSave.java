@@ -2,6 +2,7 @@ package smog;
 
 /** Full save/batch regression with the Windows directory-fsync branch selected on Linux. */
 public final class PerformanceWindowsSave {
+
     public static void main(String[] args) throws Exception {
         java.nio.file.FileSystems.getDefault();
         java.lang.management.ManagementFactory.getThreadMXBean();

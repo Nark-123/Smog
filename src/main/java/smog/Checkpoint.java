@@ -34,10 +34,7 @@ import java.util.UUID;
  */
 final class Checkpoint {
 
-    private static final int MAGIC = 0x534D4738,
-            VERSION = 1,
-            MAX_BYTES = 256 * 1024 * 1024,
-            MAX_RECORDS = 1000000;
+    private static final int MAGIC = 0x534D4738, VERSION = 1, MAX_BYTES = 256 * 1024 * 1024, MAX_RECORDS = 1000000;
 
     static final class Data {
 
@@ -115,8 +112,7 @@ final class Checkpoint {
                 data.frames.add(new DimensionState.Frame(f.positions, f.amounts, f.rejected));
             }
             for (DimensionState.Source source : s.sources.values()) {
-                data.sources.add(
-                        new DimensionState.Source(source.position, source.rate, source.phase));
+                data.sources.add(new DimensionState.Source(source.position, source.rate, source.phase));
                 sourceCells.add(source.position.cell());
             }
             cubes = new ArrayList<>(s.cubes.values()).iterator();
@@ -151,11 +147,10 @@ final class Checkpoint {
 
         private CellData copy(DimensionState.Cell c) {
             DimensionState.MassRecord mass = state.massRecord(c);
-            if ((mass == null || mass.total() == 0)
-                    && c.trapped.isEmpty()
-                    && c.waiting.isEmpty()
-                    && c.events.isEmpty()
-                    && !sourceCells.contains(c.key)) {
+            if ((mass == null || mass.total() == 0) && c.trapped.isEmpty()
+                && c.waiting.isEmpty()
+                && c.events.isEmpty()
+                && !sourceCells.contains(c.key)) {
                 return null;
             }
             CellData d = new CellData();
@@ -194,12 +189,10 @@ final class Checkpoint {
 
     static long write(Path dir, Data data, long expected) throws IOException {
         Files.createDirectories(dir);
-        try (FileChannel lockChannel =
-                        FileChannel.open(
-                                dir.resolve("writer.lock"),
-                                StandardOpenOption.CREATE,
-                                StandardOpenOption.WRITE);
-                FileLock lock = lockChannel.tryLock()) {
+        try (
+            FileChannel lockChannel = FileChannel
+                .open(dir.resolve("writer.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            FileLock lock = lockChannel.tryLock()) {
             if (lock == null) {
                 throw new IOException("Checkpoint writer already active");
             }
@@ -208,10 +201,7 @@ final class Checkpoint {
             long actual = current == null ? 0 : current.generation;
             if (actual != expected) {
                 throw new IOException(
-                        "Stale checkpoint writer: expected generation "
-                                + expected
-                                + ", current "
-                                + actual);
+                    "Stale checkpoint writer: expected generation " + expected + ", current " + actual);
             }
             long gen = Math.addExact(actual, 1);
             checkSize(data);
@@ -248,7 +238,8 @@ final class Checkpoint {
             // Cleanup follows the durable manifest; failure only retains old files.
             try (DirectoryStream<Path> old = Files.newDirectoryStream(dir, "generation-*.smog")) {
                 for (Path p : old) {
-                    String name = p.getFileName().toString();
+                    String name = p.getFileName()
+                        .toString();
                     try {
                         long id = Long.parseLong(name.substring(11, name.length() - 5));
                         if (id != gen && id != previousGeneration) {
@@ -270,17 +261,14 @@ final class Checkpoint {
     private static void atomicWrite(Path path, byte[] bytes) throws IOException {
         Path tmp = path.resolveSibling(path.getFileName() + ".tmp-" + UUID.randomUUID());
         try {
-            try (FileChannel out =
-                    FileChannel.open(
-                            tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            try (FileChannel out = FileChannel.open(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
                 ByteBuffer b = ByteBuffer.wrap(bytes);
                 while (b.hasRemaining()) {
                     out.write(b);
                 }
                 out.force(true);
             }
-            Files.move(
-                    tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } finally {
             Files.deleteIfExists(tmp);
         }
@@ -290,7 +278,8 @@ final class Checkpoint {
         // Windows cannot open directories through FileChannel. Data files are still
         // fsynced and manifest updates still use atomic rename; directory metadata
         // durability across abrupt power loss is platform-dependent on Windows.
-        if (System.getProperty("os.name", "").startsWith("Windows")) {
+        if (System.getProperty("os.name", "")
+            .startsWith("Windows")) {
             return;
         }
         try (FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
@@ -313,8 +302,8 @@ final class Checkpoint {
         try {
             Manifest previous = readManifest(dir.resolve("manifest.previous"));
             return new Loaded(
-                    readGeneration(dir, previous),
-                    current == null ? previous.generation : current.generation);
+                readGeneration(dir, previous),
+                current == null ? previous.generation : current.generation);
         } catch (IOException e) {
             failure.addSuppressed(e);
             throw new IOException("No valid checkpoint generation in " + dir, failure);
@@ -359,7 +348,8 @@ final class Checkpoint {
 
     private static byte[] sha(byte[] data) {
         try {
-            return MessageDigest.getInstance("SHA-256").digest(data);
+            return MessageDigest.getInstance("SHA-256")
+                .digest(data);
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError(e);
         }
@@ -367,20 +357,16 @@ final class Checkpoint {
 
     private static void checkSize(Data d) throws IOException {
         long size = 256L + 24L * d.sources.size() + 20L * d.open.size();
-        if (d.sources.size() > MAX_RECORDS
-                || d.frames.size() > MAX_RECORDS
-                || d.cells.size() > MAX_RECORDS) {
+        if (d.sources.size() > MAX_RECORDS || d.frames.size() > MAX_RECORDS || d.cells.size() > MAX_RECORDS) {
             throw new IOException("Too many checkpoint records");
         }
         for (DimensionState.Frame f : d.frames) {
             size += 12L + 20L * f.positions.length;
         }
         for (CellData c : d.cells) {
-            size +=
-                    25L
-                            + (c.mass == null ? 0 : 1028L + 10L * c.mass.masses.length)
-                            + 10L * (c.trapped.size() + c.waiting.size())
-                            + 18L * c.events.size();
+            size += 25L + (c.mass == null ? 0 : 1028L + 10L * c.mass.masses.length)
+                + 10L * (c.trapped.size() + c.waiting.size())
+                + 18L * c.events.size();
         }
         if (size > MAX_BYTES) {
             throw new IOException("Checkpoint exceeds 256 MiB format limit");
@@ -467,14 +453,11 @@ final class Checkpoint {
             d.parts = in.readInt();
             d.cycling = in.readBoolean();
             if (d.parts < 0
-                    || (d.parts > 0
-                            && d.ticks
-                                    != Math.addExact(
-                                            Math.multiplyExact(d.windows, (long) d.parts),
-                                            d.windowTick))
-                    || d.windowTick < 0
-                    || (d.parts == 0 ? d.windowTick != 0 : d.windowTick >= d.parts)
-                    || d.steps > d.windows) {
+                || (d.parts > 0
+                    && d.ticks != Math.addExact(Math.multiplyExact(d.windows, (long) d.parts), d.windowTick))
+                || d.windowTick < 0
+                || (d.parts == 0 ? d.windowTick != 0 : d.windowTick >= d.parts)
+                || d.steps > d.windows) {
                 throw new IOException("Invalid clocks");
             }
             d.injected = mass(in);
@@ -576,8 +559,7 @@ final class Checkpoint {
                 }
                 d.cells.add(c);
             }
-            if (!Double.isFinite(accounted)
-                    || Math.abs(accounted - d.injected) > 1e-8 * Math.max(1, d.injected)) {
+            if (!Double.isFinite(accounted) || Math.abs(accounted - d.injected) > 1e-8 * Math.max(1, d.injected)) {
                 throw new IOException("Checkpoint ledger mismatch");
             }
             if (in.read() != -1) {
@@ -621,8 +603,7 @@ final class Checkpoint {
         return new BlockPos(d, in.readInt(), in.readInt(), in.readInt());
     }
 
-    private static void positions(DataOutputStream out, Map<BlockPos, Double> map)
-            throws IOException {
+    private static void positions(DataOutputStream out, Map<BlockPos, Double> map) throws IOException {
         out.writeInt(map.size());
         for (Map.Entry<BlockPos, Double> e : map.entrySet()) {
             pos(out, e.getKey());
@@ -630,8 +611,7 @@ final class Checkpoint {
         }
     }
 
-    private static void positions(DataInputStream in, int d, Map<BlockPos, Double> map)
-            throws IOException {
+    private static void positions(DataInputStream in, int d, Map<BlockPos, Double> map) throws IOException {
         int n = count(in, 20);
         for (int i = 0; i < n; i++) {
             BlockPos p = pos(in, d);
@@ -682,21 +662,20 @@ final class Checkpoint {
     }
 
     private static SmogConfig config(DataInputStream i) throws IOException {
-        SmogConfig c =
-                SmogConfig.builder()
-                        .containerSize(i.readInt())
-                        .mode(i.readInt())
-                        .radius(i.readInt())
-                        .phase(i.readInt())
-                        .openMask(i.readInt())
-                        .law(i.readInt())
-                        .diffusion(i.readDouble())
-                        .timeStep(i.readDouble())
-                        .maxMixing(i.readDouble())
-                        .maxDiffusivity(i.readDouble())
-                        .cycle(i.readInt(), i.readInt(), i.readInt())
-                        .narrowPathRefinement(i.readBoolean())
-                        .build();
+        SmogConfig c = SmogConfig.builder()
+            .containerSize(i.readInt())
+            .mode(i.readInt())
+            .radius(i.readInt())
+            .phase(i.readInt())
+            .openMask(i.readInt())
+            .law(i.readInt())
+            .diffusion(i.readDouble())
+            .timeStep(i.readDouble())
+            .maxMixing(i.readDouble())
+            .maxDiffusivity(i.readDouble())
+            .cycle(i.readInt(), i.readInt(), i.readInt())
+            .narrowPathRefinement(i.readBoolean())
+            .build();
         if (c.containerSize != 8 || c.phase != 0 || c.law != SmogConfig.QUADRATIC_FAST) {
             throw new IOException("Unsupported sparse configuration");
         }

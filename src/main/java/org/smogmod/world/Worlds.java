@@ -1,10 +1,10 @@
 package org.smogmod.world;
 
-import net.minecraft.world.World;
-import net.minecraft.world.WorldServer;
-
 import java.util.IdentityHashMap;
 import java.util.Map;
+
+import net.minecraft.world.World;
+import net.minecraft.world.WorldServer;
 
 public final class Worlds {
 
@@ -16,8 +16,7 @@ public final class Worlds {
 
     public static void start() {
         if (!WORLDS.isEmpty()) {
-            throw new IllegalStateException(
-                    "SMOG dimensions from the previous server were not closed");
+            throw new IllegalStateException("SMOG dimensions from the previous server were not closed");
         }
         owner = Thread.currentThread();
     }
@@ -55,9 +54,11 @@ public final class Worlds {
 
     public static void stop() {
         RuntimeException failure = null;
-        java.util.Iterator<Map.Entry<World, WorldRuntime>> worlds = WORLDS.entrySet().iterator();
+        java.util.Iterator<Map.Entry<World, WorldRuntime>> worlds = WORLDS.entrySet()
+            .iterator();
         while (worlds.hasNext()) {
-            WorldRuntime runtime = worlds.next().getValue();
+            WorldRuntime runtime = worlds.next()
+                .getValue();
             try {
                 runtime.close();
                 worlds.remove();

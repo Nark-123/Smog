@@ -1,13 +1,13 @@
 package smog;
 
-import org.smogmod.compat.gt5u.PendingPulse;
-import org.smogmod.persistence.WorldStore;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+
+import org.smogmod.compat.gt5u.PendingPulse;
+import org.smogmod.persistence.WorldStore;
 
 public final class CoreIntegrationSmoke {
 
@@ -18,14 +18,8 @@ public final class CoreIntegrationSmoke {
     }
 
     public static void main(String[] args) throws Exception {
-        for (String name :
-                new String[] {
-                    "analyticTwoCells",
-                    "budgetEquivalence",
-                    "trapsAndSources",
-                    "configurationAndValidation",
-                    "customCycle"
-                }) {
+        for (String name : new String[] { "analyticTwoCells", "budgetEquivalence", "trapsAndSources",
+            "configurationAndValidation", "customCycle" }) {
             java.lang.reflect.Method method = SmogTests.class.getDeclaredMethod(name);
             method.setAccessible(true);
             method.invoke(null);
@@ -53,14 +47,12 @@ public final class CoreIntegrationSmoke {
         store = new WorldStore(path);
         state = store.load(7, world, restored);
         check(
-                restored.size() == 1
-                        && restored.get(0).position.equals(point)
-                        && restored.get(0).amount == 8750,
-                "Deferred exact XYZ pulse lost");
+            restored.size() == 1 && restored.get(0).position.equals(point) && restored.get(0).amount == 8750,
+            "Deferred exact XYZ pulse lost");
         world.put(cube, SparseTests.air(), 1, 0);
         check(
-                state.queueAddMass(point, restored.get(0).amount),
-                "Pulse must be accepted after independent negative-Y cube becomes ready");
+            state.queueAddMass(point, restored.get(0).amount),
+            "Pulse must be accepted after independent negative-Y cube becomes ready");
         restored.clear();
         store.markDirty();
         store.saveAndAwaitForShutdown(state, restored, 10000);
@@ -75,8 +67,7 @@ public final class CoreIntegrationSmoke {
         SparseTests.near(state.liveMass(), 8750, 1e-10, "One deferred event must deliver once");
         SpatialQueries.removeChunk(state, -1, -1, 250);
         state.finishPendingPart(20);
-        SparseTests.near(
-                SpatialQueries.chunkMass(state, -1, -1), 8500, 1e-10, "Negative legacy cleaner");
+        SparseTests.near(SpatialQueries.chunkMass(state, -1, -1), 8500, 1e-10, "Negative legacy cleaner");
         SparseTests.near(state.balanceError(), 0, 1e-10, "Cleanup mass balance");
         world.unload(state, cube);
         SparseTests.near(state.parkedMass(), 8500, 1e-10, "Independent cube unload parks mass");
@@ -86,11 +77,13 @@ public final class CoreIntegrationSmoke {
         store.saveAndAwaitForShutdown(state, restored, 10000);
         state.close();
         check(Files.exists(path.resolve("PREVIOUS")), "Previous checkpoint pointer missing");
-        String current =
-                new String(
-                        Files.readAllBytes(path.resolve("CURRENT")),
-                        java.nio.charset.StandardCharsets.US_ASCII);
-        Files.write(path.resolve(current).resolve("pending.bin"), new byte[] {0});
+        String current = new String(
+            Files.readAllBytes(path.resolve("CURRENT")),
+            java.nio.charset.StandardCharsets.US_ASCII);
+        Files.write(
+            path.resolve(current)
+                .resolve("pending.bin"),
+            new byte[] { 0 });
         state = new WorldStore(path).load(7, world, new ArrayList<PendingPulse>());
         state.close();
         System.out.println("SMOG_CORE_INTEGRATION_PASS");

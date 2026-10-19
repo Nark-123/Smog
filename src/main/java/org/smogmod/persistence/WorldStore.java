@@ -1,12 +1,5 @@
 package org.smogmod.persistence;
 
-import org.smogmod.compat.gt5u.PendingPulse;
-
-import smog.BlockPos;
-import smog.DimensionState;
-import smog.SmogConfig;
-import smog.WorldSnapshotProvider;
-
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -22,6 +15,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+
+import org.smogmod.compat.gt5u.PendingPulse;
+
+import smog.BlockPos;
+import smog.DimensionState;
+import smog.SmogConfig;
+import smog.WorldSnapshotProvider;
 
 /**
  * One bounded save coordinator per dimension. Requests/poll/capture are owner-thread only. The
@@ -47,11 +47,7 @@ public final class WorldStore {
 
     private volatile String phase = "IDLE", error = "";
     public long requests, coalesced, completed, failed, maxServerNanos;
-    public volatile long safeCutWaitNanos,
-            queueCopyNanos,
-            writeNanos,
-            commitNanos,
-            lastSuccessMillis;
+    public volatile long safeCutWaitNanos, queueCopyNanos, writeNanos, commitNanos, lastSuccessMillis;
 
     private volatile long writeStarted;
 
@@ -59,19 +55,17 @@ public final class WorldStore {
         this.directory = directory;
     }
 
-    public DimensionState load(
-            int dimension, WorldSnapshotProvider provider, List<PendingPulse> pulses)
-            throws IOException {
+    public DimensionState load(int dimension, WorldSnapshotProvider provider, List<PendingPulse> pulses)
+        throws IOException {
         Files.createDirectories(directory);
         IOException failure = null;
-        for (String pointer : new String[] {"CURRENT", "PREVIOUS"}) {
+        for (String pointer : new String[] { "CURRENT", "PREVIOUS" }) {
             Path index = directory.resolve(pointer);
             if (!Files.exists(index)) {
                 continue;
             }
             try {
-                String name =
-                        new String(Files.readAllBytes(index), StandardCharsets.US_ASCII).trim();
+                String name = new String(Files.readAllBytes(index), StandardCharsets.US_ASCII).trim();
                 if (!name.matches("bundle-[0-9a-f-]{36}")) {
                     throw new IOException("Invalid SMOG pointer");
                 }
@@ -151,9 +145,9 @@ public final class WorldStore {
                 } catch (CompletionException exception) {
                     failed++;
                     phase = "FAILED";
-                    error = exception.getCause().toString();
-                    System.err.println(
-                            "SMOG checkpoint FAILED; previous checkpoint retained: " + error);
+                    error = exception.getCause()
+                        .toString();
+                    System.err.println("SMOG checkpoint FAILED; previous checkpoint retained: " + error);
                     requested = false;
                 }
                 active = null;
@@ -173,39 +167,38 @@ public final class WorldStore {
         phase = "REQUESTED";
         error = "";
         Path bundle = directory.resolve("bundle-" + UUID.randomUUID());
-        active =
-                state.requestSave(
-                        bundle.resolve("core"),
-                        () -> {
-                            long start = System.nanoTime();
-                            safeCutWaitNanos = start - requestedAt;
-                            cutVersion = version;
-                            // PendingPulse and BlockPos contain final fields. The list itself is
-                            // detached.
-                            final List<PendingPulse> snapshot = new ArrayList<>(pulses);
-                            queueCopyNanos = System.nanoTime() - start;
-                            phase = "CAPTURING";
-                            return new DimensionState.SaveAttachment() {
-                                @Override
-                                public void beforeWrite() {
-                                    phase = "WRITING";
-                                    writeStarted = System.nanoTime();
-                                }
+        active = state.requestSave(bundle.resolve("core"), () -> {
+            long start = System.nanoTime();
+            safeCutWaitNanos = start - requestedAt;
+            cutVersion = version;
+            // PendingPulse and BlockPos contain final fields. The list itself is
+            // detached.
+            final List<PendingPulse> snapshot = new ArrayList<>(pulses);
+            queueCopyNanos = System.nanoTime() - start;
+            phase = "CAPTURING";
+            return new DimensionState.SaveAttachment() {
 
-                                @Override
-                                public void commit(Path core) throws IOException {
-                                    writePulses(bundle, snapshot);
-                                    force(bundle);
-                                    writeNanos = System.nanoTime() - writeStarted;
-                                    phase = "COMMITTING";
-                                    long start = System.nanoTime();
-                                    commitBundle(bundle);
-                                    lastValid = bundle.getFileName().toString();
-                                    commitNanos = System.nanoTime() - start;
-                                    lastSuccessMillis = System.currentTimeMillis();
-                                }
-                            };
-                        });
+                @Override
+                public void beforeWrite() {
+                    phase = "WRITING";
+                    writeStarted = System.nanoTime();
+                }
+
+                @Override
+                public void commit(Path core) throws IOException {
+                    writePulses(bundle, snapshot);
+                    force(bundle);
+                    writeNanos = System.nanoTime() - writeStarted;
+                    phase = "COMMITTING";
+                    long start = System.nanoTime();
+                    commitBundle(bundle);
+                    lastValid = bundle.getFileName()
+                        .toString();
+                    commitNanos = System.nanoTime() - start;
+                    lastSuccessMillis = System.currentTimeMillis();
+                }
+            };
+        });
     }
 
     private void commitBundle(Path bundle) throws IOException {
@@ -216,7 +209,10 @@ public final class WorldStore {
             if (lastValid != null) {
                 pointer("PREVIOUS", lastValid);
             }
-            pointer("CURRENT", bundle.getFileName().toString());
+            pointer(
+                "CURRENT",
+                bundle.getFileName()
+                    .toString());
         } catch (IOException failure) {
             // A rejected CURRENT replacement must not leave both pointers on the same bundle.
             // A crash during this rollback still retains a complete valid CURRENT bundle.
@@ -235,8 +231,7 @@ public final class WorldStore {
     }
 
     private static void writePulses(Path bundle, List<PendingPulse> snapshot) throws IOException {
-        try (DataOutputStream out =
-                new DataOutputStream(Files.newOutputStream(bundle.resolve("pending.bin")))) {
+        try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(bundle.resolve("pending.bin")))) {
             out.writeInt(0x534D5051);
             out.writeInt(1);
             out.writeInt(snapshot.size());
@@ -249,16 +244,14 @@ public final class WorldStore {
                 out.writeBoolean(pulse.adjacent);
             }
         }
-        Files.write(
-                bundle.resolve("pending.sha256"),
-                hash(Files.readAllBytes(bundle.resolve("pending.bin"))));
+        Files.write(bundle.resolve("pending.sha256"), hash(Files.readAllBytes(bundle.resolve("pending.bin"))));
         force(bundle.resolve("pending.bin"));
         force(bundle.resolve("pending.sha256"));
     }
 
     /** The only waiting path: bounded final flush after gameplay has stopped. */
-    public void saveAndAwaitForShutdown(
-            DimensionState state, List<PendingPulse> pulses, long timeoutMillis) throws Exception {
+    public void saveAndAwaitForShutdown(DimensionState state, List<PendingPulse> pulses, long timeoutMillis)
+        throws Exception {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         this.state = state;
         this.pulses = pulses;
@@ -271,8 +264,7 @@ public final class WorldStore {
         while (active != null || requested) {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) {
-                throw new TimeoutException(
-                        "SMOG final checkpoint timeout in " + phase + "; data not discarded");
+                throw new TimeoutException("SMOG final checkpoint timeout in " + phase + "; data not discarded");
             }
             state.geometry(Math.min(TimeUnit.MILLISECONDS.toNanos(2), remaining));
             if ("REQUESTED".equals(state.checkpointPhase())) {
@@ -283,8 +275,7 @@ public final class WorldStore {
                     active.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
                 } catch (java.util.concurrent.ExecutionException exception) {
                     pollSaveCompletion();
-                    throw new IOException(
-                            "SMOG final checkpoint failed: " + error, exception.getCause());
+                    throw new IOException("SMOG final checkpoint failed: " + error, exception.getCause());
                 }
             }
             pollSaveCompletion();
@@ -304,46 +295,44 @@ public final class WorldStore {
 
     public String status() {
         String currentPhase = phase;
-        if (active != null
-                && !active.isDone()
-                && !"WRITING".equals(currentPhase)
-                && !"COMMITTING".equals(currentPhase)) {
+        if (active != null && !active.isDone()
+            && !"WRITING".equals(currentPhase)
+            && !"COMMITTING".equals(currentPhase)) {
             currentPhase = state.checkpointPhase();
         }
-        return "save="
-                + currentPhase
-                + " bundle="
-                + lastValid
-                + " commitsSession="
-                + completed
-                + " coreGeneration="
-                + (state == null ? 0 : state.checkpointGeneration())
-                + " lastSuccessMillis="
-                + lastSuccessMillis
-                + " requests="
-                + requests
-                + " coalesced="
-                + coalesced
-                + " waitMs="
-                + safeCutWaitNanos / 1e6
-                + " captureWallMs="
-                + (state == null ? 0 : state.captureWallNanos / 1e6)
-                + " captureCpuMs="
-                + (state == null ? 0 : state.captureCpuNanos / 1e6)
-                + " queueCopyMs="
-                + queueCopyNanos / 1e6
-                + " writeFsyncMs="
-                + writeNanos / 1e6
-                + " commitMs="
-                + commitNanos / 1e6
-                + " ioCpuTotalMs="
-                + (state == null ? 0 : state.ioCpuNanos / 1e6)
-                + " maxServerMs="
-                + Math.max(maxServerNanos, state == null ? 0 : state.maxCaptureTickNanos) / 1e6
-                + " maxCaptureMutationMs="
-                + (state == null ? 0 : state.maxCaptureMutationNanos / 1e6)
-                + " error="
-                + error;
+        return "save=" + currentPhase
+            + " bundle="
+            + lastValid
+            + " commitsSession="
+            + completed
+            + " coreGeneration="
+            + (state == null ? 0 : state.checkpointGeneration())
+            + " lastSuccessMillis="
+            + lastSuccessMillis
+            + " requests="
+            + requests
+            + " coalesced="
+            + coalesced
+            + " waitMs="
+            + safeCutWaitNanos / 1e6
+            + " captureWallMs="
+            + (state == null ? 0 : state.captureWallNanos / 1e6)
+            + " captureCpuMs="
+            + (state == null ? 0 : state.captureCpuNanos / 1e6)
+            + " queueCopyMs="
+            + queueCopyNanos / 1e6
+            + " writeFsyncMs="
+            + writeNanos / 1e6
+            + " commitMs="
+            + commitNanos / 1e6
+            + " ioCpuTotalMs="
+            + (state == null ? 0 : state.ioCpuNanos / 1e6)
+            + " maxServerMs="
+            + Math.max(maxServerNanos, state == null ? 0 : state.maxCaptureTickNanos) / 1e6
+            + " maxCaptureMutationMs="
+            + (state == null ? 0 : state.maxCaptureMutationNanos / 1e6)
+            + " error="
+            + error;
     }
 
     private void pointer(String pointer, String value) throws IOException {
@@ -352,10 +341,10 @@ public final class WorldStore {
         force(temp);
         try {
             Files.move(
-                    temp,
-                    directory.resolve(pointer),
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
+                temp,
+                directory.resolve(pointer),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING);
         } catch (java.nio.file.AtomicMoveNotSupportedException exception) {
             throw new IOException("Atomic SMOG pointer required", exception);
         }
@@ -364,17 +353,14 @@ public final class WorldStore {
 
     private static void force(Path path) throws IOException {
         boolean directory = Files.isDirectory(path);
-        if (directory && System.getProperty("os.name", "").startsWith("Windows")) {
+        if (directory && System.getProperty("os.name", "")
+            .startsWith("Windows")) {
             // Windows rejects FileChannel.open(directory) even when file writes work.
             // Regular checkpoint files still require fsync and atomic pointer moves.
             return;
         }
-        try (java.nio.channels.FileChannel channel =
-                java.nio.channels.FileChannel.open(
-                        path,
-                        directory
-                                ? java.nio.file.StandardOpenOption.READ
-                                : java.nio.file.StandardOpenOption.WRITE)) {
+        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel
+            .open(path, directory ? java.nio.file.StandardOpenOption.READ : java.nio.file.StandardOpenOption.WRITE)) {
             channel.force(true);
         } catch (UnsupportedOperationException unsupported) {
             if (!directory) {
@@ -388,9 +374,8 @@ public final class WorldStore {
     }
 
     private List<PendingPulse> readPulses(Path path, int dimension) throws IOException {
-        if (!java.util.Arrays.equals(
-                hash(Files.readAllBytes(path)),
-                Files.readAllBytes(path.resolveSibling("pending.sha256")))) {
+        if (!java.util.Arrays
+            .equals(hash(Files.readAllBytes(path)), Files.readAllBytes(path.resolveSibling("pending.sha256")))) {
             throw new IOException("SMOG queue checksum mismatch");
         }
         List<PendingPulse> pulses = new ArrayList<>();
@@ -404,11 +389,11 @@ public final class WorldStore {
             }
             for (int i = 0; i < count; i++) {
                 pulses.add(
-                        new PendingPulse(
-                                new BlockPos(dimension, in.readInt(), in.readInt(), in.readInt()),
-                                in.readLong(),
-                                in.readBoolean(),
-                                in.readBoolean()));
+                    new PendingPulse(
+                        new BlockPos(dimension, in.readInt(), in.readInt(), in.readInt()),
+                        in.readLong(),
+                        in.readBoolean(),
+                        in.readBoolean()));
             }
             if (in.read() != -1) {
                 throw new IOException("Trailing queue data");
@@ -419,7 +404,8 @@ public final class WorldStore {
 
     private static byte[] hash(byte[] bytes) {
         try {
-            return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            return java.security.MessageDigest.getInstance("SHA-256")
+                .digest(bytes);
         } catch (java.security.NoSuchAlgorithmException impossible) {
             throw new AssertionError(impossible);
         }

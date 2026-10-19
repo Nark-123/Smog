@@ -35,6 +35,9 @@ final class CellBuild {
 
     private final DimensionState.Geometry[] neighbors = new DimensionState.Geometry[6];
 
+    // Captured by validContacts on the owner thread; reused by refreshContacts.
+    private final DimensionState.Geometry[] checkedNeighbors = new DimensionState.Geometry[6];
+
     private final Partitioner partitioner;
 
     private final BlockPos origin;
@@ -195,8 +198,9 @@ final class CellBuild {
             return false;
         }
         for (int i = 0; i < keys.length; i++) {
-            ImmutableCubeSnapshot s = state.snapshot(keys[i]), old = snapshots[i];
-            if ((s == null) != (old == null) || (s != null && (s.epoch != old.epoch || s.revision != old.revision))) {
+            // The Forge provider compares section revisions without reloading or
+            // even retrieving the 16^3 snapshots. Others use the safe fallback.
+            if (!state.provider.matchesSnapshot(keys[i], snapshots[i])) {
                 return false;
             }
         }
@@ -204,13 +208,15 @@ final class CellBuild {
     }
 
     boolean validContacts() {
+        boolean valid = true;
         for (int d = 0; d < 6; d++) {
             DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);
-            if ((c == null ? null : c.geometry) != neighbors[d]) {
-                return false;
+            checkedNeighbors[d] = c == null ? null : c.geometry;
+            if (checkedNeighbors[d] != neighbors[d]) {
+                valid = false;
             }
         }
-        return true;
+        return valid;
     }
 
     void refreshContacts() {
@@ -220,10 +226,9 @@ final class CellBuild {
         cursor = face = 0;
         stage = 4;
         ready = false;
-        for (int d = 0; d < 6; d++) {
-            DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);
-            neighbors[d] = c == null ? null : c.geometry;
-        }
+        // validContacts just read all six neighbours on the same owner thread.
+        // A second lookup here would duplicate the work, without improving safety.
+        System.arraycopy(checkedNeighbors, 0, neighbors, 0, neighbors.length);
     }
 
     private ImmutableCubeSnapshot at(int x, int y, int z) {

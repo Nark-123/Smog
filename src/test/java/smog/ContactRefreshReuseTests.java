@@ -25,15 +25,17 @@ public final class ContactRefreshReuseTests {
 
     private static List<String> edges(EdgeAccumulator data, SmogConfig config) {
         final List<String> result = new ArrayList<>();
-        data.appendTo(config, (a, b, g) ->
-                result.add(a + ":" + b + ":" + Long.toHexString(Double.doubleToLongBits(g))));
+        data.appendTo(
+            config,
+            (a, b, g) -> result.add(a + ":" + b + ":" + Long.toHexString(Double.doubleToLongBits(g))));
         return result;
     }
 
     private static void compare(CellBuild actual, CellBuild fresh, SmogConfig config, String message) {
         check(Arrays.equals(actual.boundary, fresh.boundary), message + " boundary changed");
-        check(edges(actual.edges, config).equals(edges(fresh.edges, config)),
-                message + " edges differ from a complete rebuild");
+        check(
+            edges(actual.edges, config).equals(edges(fresh.edges, config)),
+            message + " edges differ from a complete rebuild");
     }
 
     private static DimensionState.Geometry neighborGeometry(int id, int salt) {
@@ -93,8 +95,9 @@ public final class ContactRefreshReuseTests {
             neighbor.geometry = neighborGeometry(100, 0);
             check(!candidate.validContacts(), "new neighbor must invalidate contacts");
             candidate.refreshContacts();
-            check(candidate.diagnosticStage() == 4 && !candidate.ready,
-                    "refresh must restart only external contacts (stage 4)");
+            check(
+                candidate.diagnosticStage() == 4 && !candidate.ready,
+                "refresh must restart only external contacts (stage 4)");
             check(Arrays.equals(frozenBoundary, candidate.boundary), "refresh cleared boundaries");
             for (int n = 0; !candidate.ready && n < 100; n++) {
                 check(candidate.diagnosticStage() == 4, "refresh recomputed internal contacts");
@@ -102,16 +105,16 @@ public final class ContactRefreshReuseTests {
             }
             check(candidate.ready && candidate.validContacts(), "refreshed neighbor not ready");
             compare(candidate, complete(state, cell), config, "new neighbor");
-            check(edges(candidate.edges, config).size() > originalEdges.size(),
-                    "new neighbor did not generate external edges");
+            check(
+                edges(candidate.edges, config).size() > originalEdges.size(),
+                "new neighbor did not generate external edges");
 
             // Neighbor ID/geometry changes twice; old external contacts must disappear.
             for (int i = 0; i < 2; i++) {
                 neighbor.geometry = neighborGeometry(200 + i, i + 1);
                 check(!candidate.validContacts(), "replaced neighbor was missed");
                 candidate.refreshContacts();
-                check(candidate.diagnosticStage() == 4 && !candidate.ready,
-                        "replacement restarted internal phase");
+                check(candidate.diagnosticStage() == 4 && !candidate.ready, "replacement restarted internal phase");
                 while (!candidate.ready) {
                     candidate.advance();
                 }
@@ -125,8 +128,9 @@ public final class ContactRefreshReuseTests {
                 candidate.advance();
             }
             compare(candidate, complete(state, cell), config, "neighbor removal");
-            check(edges(candidate.edges, config).equals(originalEdges),
-                    "stale external edges survived neighbor removal");
+            check(
+                edges(candidate.edges, config).equals(originalEdges),
+                "stale external edges survived neighbor removal");
             check(candidate.validWorld(), "world changed during contact refresh");
         } finally {
             state.close();
@@ -135,7 +139,9 @@ public final class ContactRefreshReuseTests {
 
     public static void main(String[] args) {
         SmogConfig a = SmogConfig.throat8();
-        SmogConfig b = SmogConfig.builder().mode(SmogConfig.COMPONENT).build();
+        SmogConfig b = SmogConfig.builder()
+            .mode(SmogConfig.COMPONENT)
+            .build();
         testCopyPreservesHashTableWithResizing(a);
         testCopyPreservesHashTableWithResizing(b);
         testRefreshingNeighbors(a);

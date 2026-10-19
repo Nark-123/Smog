@@ -1,20 +1,5 @@
 package org.smogmod.world;
 
-import net.minecraft.world.WorldServer;
-import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.gen.ChunkProviderServer;
-
-import org.smogmod.compat.gt5u.PendingPulse;
-import org.smogmod.persistence.WorldStore;
-
-import smog.BlockPos;
-import smog.CubeKey;
-import smog.DimensionState;
-import smog.GeometryMetrics;
-import smog.ImmutableCubeSnapshot;
-import smog.SpatialQueries;
-import smog.WorldAdapters;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -23,27 +8,40 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import net.minecraft.world.WorldServer;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.gen.ChunkProviderServer;
+
+import org.smogmod.compat.gt5u.PendingPulse;
+import org.smogmod.persistence.WorldStore;
+
 import cpw.mods.fml.common.FMLLog;
+import smog.BlockPos;
+import smog.CubeKey;
+import smog.DimensionState;
+import smog.GeometryMetrics;
+import smog.ImmutableCubeSnapshot;
+import smog.SpatialQueries;
+import smog.WorldAdapters;
 
 public final class WorldRuntime implements AutoCloseable {
 
-    private static final int PERF_LOG_TICKS =
-            Math.max(20, Math.min(72000, Integer.getInteger("smog.perfLogTicks", 1200)));
+    private static final int PERF_LOG_TICKS = Math
+        .max(20, Math.min(72000, Integer.getInteger("smog.perfLogTicks", 1200)));
 
     // Stable, numeric CSV schema for comparison across identical server runs.
-    private static final String PERF_CSV_HEADER =
-            "timestamp_utc,schema_version,dimension,world_tick,period_ticks,prepared_limit"
-            + ",runtime_avg_ms,geometry_avg_ms,snapshot_phase_ms,halo_phase_ms"
-            + ",partition_phase_ms,inner_contacts_phase_ms,outer_contacts_phase_ms"
-            + ",front_total_ms,contacts_refreshes,prepared_accepted,law_capture_skips"
-            + ",safe_calls,safe_used_ms,safe_budget_ms"
-            + ",safe_max_call_ms,safe_budget_ends,safe_idle_ends,safe_prepared_start_avg"
-            + ",safe_prepared_end_avg,safe_world_validation_ms,safe_contact_validation_ms"
-            + ",safe_refresh_request_ms,safe_refresh_rebuild_ms,safe_fresh_build_ms"
-            + ",safe_publish_ms,safe_publish_us_per_cell,safe_apply_events_ms,safe_front_ms"
-            + ",safe_other_ms,publications,safe_windows_opened,safe_windows_with_publication"
-            + ",window_max_publications,build_queue,prepared_queue,front_queue,stale_jobs"
-            + ",model_lag_sec";
+    private static final String PERF_CSV_HEADER = "timestamp_utc,schema_version,dimension,world_tick,period_ticks,prepared_limit"
+        + ",runtime_avg_ms,geometry_avg_ms,snapshot_phase_ms,halo_phase_ms"
+        + ",partition_phase_ms,inner_contacts_phase_ms,outer_contacts_phase_ms"
+        + ",front_total_ms,contacts_refreshes,prepared_accepted,law_capture_skips"
+        + ",safe_calls,safe_used_ms,safe_budget_ms"
+        + ",safe_max_call_ms,safe_budget_ends,safe_idle_ends,safe_prepared_start_avg"
+        + ",safe_prepared_end_avg,safe_world_validation_ms,safe_contact_validation_ms"
+        + ",safe_refresh_request_ms,safe_refresh_rebuild_ms,safe_fresh_build_ms"
+        + ",safe_publish_ms,safe_publish_us_per_cell,safe_apply_events_ms,safe_front_ms"
+        + ",safe_other_ms,publications,safe_windows_opened,safe_windows_with_publication"
+        + ",window_max_publications,build_queue,prepared_queue,front_queue,stale_jobs"
+        + ",model_lag_sec";
 
     public final WorldServer world;
 
@@ -67,11 +65,7 @@ public final class WorldRuntime implements AutoCloseable {
 
     public long acceptedPulses;
 
-    public long networkBatches,
-            networkUniqueChunks,
-            networkFullScans,
-            networkCubeVisits,
-            networkPackets;
+    public long networkBatches, networkUniqueChunks, networkFullScans, networkCubeVisits, networkPackets;
 
     private long perfTicks, perfTickNanos, perfMaxTickNanos;
     private long perfDeliveryNanos, perfMaxDeliveryNanos, perfDeliveryAttempts;
@@ -108,15 +102,15 @@ public final class WorldRuntime implements AutoCloseable {
         this.world = world;
         provider = new ForgeWorldSnapshotProvider(world.provider.dimensionId);
         performanceFileLog = new PerformanceFileLog(
-                world.getSaveHandler().getWorldDirectory().toPath().resolve(
-                        "data/smog/diagnostics/perf-dimension_"
-                                + world.provider.dimensionId + ".log"));
-        store =
-                new WorldStore(
-                        world.getSaveHandler()
-                                .getWorldDirectory()
-                                .toPath()
-                                .resolve("data/smog/dimension_" + world.provider.dimensionId));
+            world.getSaveHandler()
+                .getWorldDirectory()
+                .toPath()
+                .resolve("data/smog/diagnostics/perf-dimension_" + world.provider.dimensionId + ".log"));
+        store = new WorldStore(
+            world.getSaveHandler()
+                .getWorldDirectory()
+                .toPath()
+                .resolve("data/smog/dimension_" + world.provider.dimensionId));
         state = store.load(world.provider.dimensionId, provider, pending);
         if (perfLogging) {
             long now = world.getTotalWorldTime();
@@ -147,16 +141,14 @@ public final class WorldRuntime implements AutoCloseable {
         store.markDirty();
         long epoch = provider.unload(chunk.xPosition, chunk.zPosition);
         for (int y = 0; y < 16; y++) {
-            WorldAdapters.cubeUnloading(
-                    state,
-                    new CubeKey(state.dimension, chunk.xPosition, y, chunk.zPosition),
-                    epoch);
+            WorldAdapters
+                .cubeUnloading(state, new CubeKey(state.dimension, chunk.xPosition, y, chunk.zPosition), epoch);
         }
     }
 
     public void changed(int x, int y, int z) {
         store.markDirty();
-        provider.revise(x >> 4, z >> 4);
+        provider.reviseBlock(x, y, z);
         changes.add(new BlockPos(state.dimension, x, y, z));
     }
 
@@ -164,11 +156,10 @@ public final class WorldRuntime implements AutoCloseable {
         store.markDirty();
         for (Object value : ((ChunkProviderServer) world.getChunkProvider()).loadedChunks) {
             Chunk chunk = (Chunk) value;
-            if ((long) chunk.xPosition * 16 <= max.x
-                    && (long) chunk.xPosition * 16 + 15 >= min.x
-                    && (long) chunk.zPosition * 16 <= max.z
-                    && (long) chunk.zPosition * 16 + 15 >= min.z) {
-                provider.revise(chunk.xPosition, chunk.zPosition);
+            if ((long) chunk.xPosition * 16 <= max.x && (long) chunk.xPosition * 16 + 15 >= min.x
+                && (long) chunk.zPosition * 16 <= max.z
+                && (long) chunk.zPosition * 16 + 15 >= min.z) {
+                provider.reviseRange(chunk.xPosition, chunk.zPosition, min.y, max.y);
             }
         }
         state.invalidateRegion(min, max);
@@ -199,7 +190,7 @@ public final class WorldRuntime implements AutoCloseable {
             changes.clear();
         }
         long deliveryStart = System.nanoTime();
-        for (Iterator<PendingPulse> iterator = pending.iterator(); iterator.hasNext(); ) {
+        for (Iterator<PendingPulse> iterator = pending.iterator(); iterator.hasNext();) {
             perfDeliveryAttempts++;
             if (deliver(iterator.next())) {
                 perfDelivered++;
@@ -262,95 +253,218 @@ public final class WorldRuntime implements AutoCloseable {
             calls.append(m.phaseCalls[i]);
         }
         return new String[] {
-            "SMOG PERF dim=" + state.dimension + " ticks=" + perfTicks
-                    + " elapsedSec=" + String.format(Locale.ROOT, "%.1f",
-                            (System.nanoTime() - perfStartedAt) / 1e9)
-                    + " log=" + (perfLogging ? "on" : "off")
-                    + " periodTicks=" + PERF_LOG_TICKS,
-            "tickAvg/MaxMs=" + avgMs(perfTickNanos, perfTicks) + "/" + ms(perfMaxTickNanos)
-                    + " geometryAvg/MaxMs=" + avgMs(m.geometryNanos, m.geometryCalls)
-                    + "/" + ms(m.geometryMaxNanos)
-                    + " geomCalls/busy=" + m.geometryCalls + "/" + m.geometryBusyCalls
-                    + " slow10ms(runtime/geometry)=" + perfSlowRuntimeTicks + "/"
-                    + perfSlowGeometryTicks,
-            totals.toString(),
-            max.toString() + " " + calls.toString(),
-            "build jobs/new/rebuild/stale=" + m.jobsStarted + "/" + m.newJobs
-                    + "/" + m.rebuildJobs + "/" + m.staleJobs
-                    + " overruns=" + m.budgetOverruns
-                    + " prepared/partitions/nodes/maxNodes=" + m.cellsPrepared + "/"
-                    + m.partitionsCompleted + "/" + m.partitionNodes + "/" + m.maxPartitionNodes,
-            "front count/total/max=" + m.frontScans + "/" + ms(m.frontNanos)
-                    + "/" + ms(m.frontMaxNanos)
-                    + " worldChecks/bad=" + m.worldValidations + "/" + m.worldInvalid
-                    + " worldCheckMs=" + ms(m.worldValidationNanos),
-            "contacts checks/refreshes=" + m.contactValidations + "/" + m.contactRefreshes
-                    + " checkMs/maxMs=" + ms(m.contactValidationNanos) + "/"
-                    + ms(m.contactValidationMaxNanos)
-                    + " refreshRequestMs/max=" + ms(m.refreshRequestNanos) + "/"
-                    + ms(m.refreshRequestMaxNanos)
-                    + " refreshBuildMs=" + ms(m.refreshAdvanceNanos),
-            "publish count/total/maxMs=" + m.publishCalls + "/"
-                    + ms(m.publishNanos) + "/" + ms(m.publishMaxNanos)
-                    + " worldCheckMs/maxMs=" + ms(m.worldValidationNanos) + "/"
-                    + ms(m.worldValidationMaxNanos),
-            "safeWindows open/closed/withPublish=" + m.safeWindowsOpened + "/"
-                    + m.safeWindowsClosed + "/" + m.safeWindowsWithPublish
-                    + " publications/maxPerWindow/last/current="
-                    + m.safeWindowPublishTotal + "/" + m.safeWindowMaxPublished + "/"
-                    + m.safeWindowLastPublished + "/" + m.safeWindowCurrentPublished
-                    + " eligibleGeometryCalls=" + m.eligibleGeometryCalls,
+            "SMOG PERF dim=" + state.dimension
+                + " ticks="
+                + perfTicks
+                + " elapsedSec="
+                + String.format(Locale.ROOT, "%.1f", (System.nanoTime() - perfStartedAt) / 1e9)
+                + " log="
+                + (perfLogging ? "on" : "off")
+                + " periodTicks="
+                + PERF_LOG_TICKS,
+            "tickAvg/MaxMs=" + avgMs(perfTickNanos, perfTicks)
+                + "/"
+                + ms(perfMaxTickNanos)
+                + " geometryAvg/MaxMs="
+                + avgMs(m.geometryNanos, m.geometryCalls)
+                + "/"
+                + ms(m.geometryMaxNanos)
+                + " geomCalls/busy="
+                + m.geometryCalls
+                + "/"
+                + m.geometryBusyCalls
+                + " slow10ms(runtime/geometry)="
+                + perfSlowRuntimeTicks
+                + "/"
+                + perfSlowGeometryTicks,
+            totals.toString(), max.toString() + " " + calls.toString(),
+            "build jobs/new/rebuild/stale=" + m.jobsStarted
+                + "/"
+                + m.newJobs
+                + "/"
+                + m.rebuildJobs
+                + "/"
+                + m.staleJobs
+                + " overruns="
+                + m.budgetOverruns
+                + " prepared/partitions/nodes/maxNodes="
+                + m.cellsPrepared
+                + "/"
+                + m.partitionsCompleted
+                + "/"
+                + m.partitionNodes
+                + "/"
+                + m.maxPartitionNodes,
+            "front count/total/max=" + m.frontScans
+                + "/"
+                + ms(m.frontNanos)
+                + "/"
+                + ms(m.frontMaxNanos)
+                + " worldChecks/bad="
+                + m.worldValidations
+                + "/"
+                + m.worldInvalid
+                + " worldCheckMs="
+                + ms(m.worldValidationNanos),
+            "contacts checks/refreshes=" + m.contactValidations
+                + "/"
+                + m.contactRefreshes
+                + " checkMs/maxMs="
+                + ms(m.contactValidationNanos)
+                + "/"
+                + ms(m.contactValidationMaxNanos)
+                + " refreshRequestMs/max="
+                + ms(m.refreshRequestNanos)
+                + "/"
+                + ms(m.refreshRequestMaxNanos)
+                + " refreshBuildMs="
+                + ms(m.refreshAdvanceNanos),
+            "publish count/total/maxMs=" + m.publishCalls
+                + "/"
+                + ms(m.publishNanos)
+                + "/"
+                + ms(m.publishMaxNanos)
+                + " worldCheckMs/maxMs="
+                + ms(m.worldValidationNanos)
+                + "/"
+                + ms(m.worldValidationMaxNanos),
+            "safeWindows open/closed/withPublish=" + m.safeWindowsOpened
+                + "/"
+                + m.safeWindowsClosed
+                + "/"
+                + m.safeWindowsWithPublish
+                + " publications/maxPerWindow/last/current="
+                + m.safeWindowPublishTotal
+                + "/"
+                + m.safeWindowMaxPublished
+                + "/"
+                + m.safeWindowLastPublished
+                + "/"
+                + m.safeWindowCurrentPublished
+                + " eligibleGeometryCalls="
+                + m.eligibleGeometryCalls,
             "publishedAge queued(avg/maxTicks)="
-                    + (m.queueWaitSamples == 0 ? "n/a" : String.valueOf(
-                            m.queueWaitTotalTicks / m.queueWaitSamples)) + "/"
-                    + m.queueWaitMaxTicks
-                    + " prepared(avg/maxTicks)="
-                    + (m.preparedWaitSamples == 0 ? "n/a" : String.valueOf(
-                            m.preparedWaitTotalTicks / m.preparedWaitSamples)) + "/"
-                    + m.preparedWaitMaxTicks
-                    + " buckets(<=20/<=100/<=600/>600)="
-                    + m.queueWaitBuckets[0] + "/" + m.queueWaitBuckets[1] + "/"
-                    + m.queueWaitBuckets[2] + "/" + m.queueWaitBuckets[3],
-            "snapCache hits/miss/unready=" + p.hits + "/" + p.misses + "/" + p.unavailable
-                    + " cached=" + provider.cachedSnapshotCount()
-                    + " loadedColumns=" + provider.loadedColumnCount()
-                    + " buildTotal/MaxMs=" + ms(p.buildNanos) + "/" + ms(p.maxBuildNanos)
-                    + " errors=" + p.buildFailures,
-            "cacheInvalidate calls/evicted=" + p.invalidations + "/" + p.evictedSnapshots
-                    + " total/maxMs=" + ms(p.invalidateNanos) + "/" + ms(p.maxInvalidateNanos)
-                    + " revisions=" + p.revisions + " loads/unloads=" + p.loads + "/" + p.unloads,
-            "queues builds/job/prepared/fronts=" + queues[0] + "/" + queues[1]
-                    + "/" + queues[2] + "/" + queues[3]
-                    + " preparedLimit=" + state.preparedLimit()
-                    + " queueHeadAgeTicks(build/prepared)=" + queueHeads[0] + "/" + queueHeads[1]
-                    + " modelLagSeconds=" + String.format(Locale.ROOT, "%.3f",
-                            state.gameTime() - state.modelTime())
-                    + " frames=" + state.pendingIntervals(),
-            "cubeRecords total/ready/active/parkedOnly=" + f.registeredCubes + "/" + f.readyCubes
-                    + "/" + f.activeCubes + "/" + f.parkedOnlyCubes
-                    + " cells allocated/active/parked=" + f.allocatedCells + "/"
-                    + f.activeCells + "/" + f.parkedCells,
-            "pulses attempts/delivered/deferred=" + perfDeliveryAttempts + "/"
-                    + perfDelivered + "/" + perfDeferred
-                    + " queue=" + pending.size() + " deliveryTotal/MaxMs="
-                    + ms(perfDeliveryNanos) + "/" + ms(perfMaxDeliveryNanos)
-                    + " invalidatedBlocks=" + perfInvalidatedBlocks
-                    + " invalidationMs=" + ms(perfInvalidationNanos),
-            "geometryExit budget/idle/idleBacklog/solver/capture/preparedFull="
-                    + m.budgetEndCalls + "/" + m.idleEndCalls + "/"
-                    + m.idleWithBacklogCalls + "/" + m.waitSolverCalls + "/"
-                    + m.waitCaptureCalls + "/" + m.preparedFullCalls
-                    + " lawParts tried/committed/skippedCapture=" + m.partCalls + "/"
-                    + m.partCommits + "/" + m.partsSkippedForCapture
-                    + " unloadCancellations=" + state.unloadCancellations,
-            "capture calls/total/MaxMs=" + m.captureCalls + "/" + ms(m.captureNanos)
-                    + "/" + ms(m.captureMaxNanos)
-                    + " existingMaxSnapshotUnitMs=" + ms(state.maxSnapshotUnitNanos)
-                    + " staleJobs=" + state.staleJobs
-                    + " overruns=" + state.budgetOverruns
-                    + " (last three lifetime)",
-            performanceLogStatus()
-        };
+                + (m.queueWaitSamples == 0 ? "n/a" : String.valueOf(m.queueWaitTotalTicks / m.queueWaitSamples))
+                + "/"
+                + m.queueWaitMaxTicks
+                + " prepared(avg/maxTicks)="
+                + (m.preparedWaitSamples == 0 ? "n/a"
+                    : String.valueOf(m.preparedWaitTotalTicks / m.preparedWaitSamples))
+                + "/"
+                + m.preparedWaitMaxTicks
+                + " buckets(<=20/<=100/<=600/>600)="
+                + m.queueWaitBuckets[0]
+                + "/"
+                + m.queueWaitBuckets[1]
+                + "/"
+                + m.queueWaitBuckets[2]
+                + "/"
+                + m.queueWaitBuckets[3],
+            "snapCache hits/miss/unready=" + p.hits
+                + "/"
+                + p.misses
+                + "/"
+                + p.unavailable
+                + " cached="
+                + provider.cachedSnapshotCount()
+                + " loadedColumns="
+                + provider.loadedColumnCount()
+                + " buildTotal/MaxMs="
+                + ms(p.buildNanos)
+                + "/"
+                + ms(p.maxBuildNanos)
+                + " errors="
+                + p.buildFailures,
+            "cacheInvalidate calls/evicted=" + p.invalidations
+                + "/"
+                + p.evictedSnapshots
+                + " total/maxMs="
+                + ms(p.invalidateNanos)
+                + "/"
+                + ms(p.maxInvalidateNanos)
+                + " revisions="
+                + p.revisions
+                + " loads/unloads="
+                + p.loads
+                + "/"
+                + p.unloads,
+            "queues builds/job/prepared/fronts=" + queues[0]
+                + "/"
+                + queues[1]
+                + "/"
+                + queues[2]
+                + "/"
+                + queues[3]
+                + " preparedLimit="
+                + state.preparedLimit()
+                + " queueHeadAgeTicks(build/prepared)="
+                + queueHeads[0]
+                + "/"
+                + queueHeads[1]
+                + " modelLagSeconds="
+                + String.format(Locale.ROOT, "%.3f", state.gameTime() - state.modelTime())
+                + " frames="
+                + state.pendingIntervals(),
+            "cubeRecords total/ready/active/parkedOnly=" + f.registeredCubes
+                + "/"
+                + f.readyCubes
+                + "/"
+                + f.activeCubes
+                + "/"
+                + f.parkedOnlyCubes
+                + " cells allocated/active/parked="
+                + f.allocatedCells
+                + "/"
+                + f.activeCells
+                + "/"
+                + f.parkedCells,
+            "pulses attempts/delivered/deferred=" + perfDeliveryAttempts
+                + "/"
+                + perfDelivered
+                + "/"
+                + perfDeferred
+                + " queue="
+                + pending.size()
+                + " deliveryTotal/MaxMs="
+                + ms(perfDeliveryNanos)
+                + "/"
+                + ms(perfMaxDeliveryNanos)
+                + " invalidatedBlocks="
+                + perfInvalidatedBlocks
+                + " invalidationMs="
+                + ms(perfInvalidationNanos),
+            "geometryExit budget/idle/idleBacklog/solver/capture/preparedFull=" + m.budgetEndCalls
+                + "/"
+                + m.idleEndCalls
+                + "/"
+                + m.idleWithBacklogCalls
+                + "/"
+                + m.waitSolverCalls
+                + "/"
+                + m.waitCaptureCalls
+                + "/"
+                + m.preparedFullCalls
+                + " lawParts tried/committed/skippedCapture="
+                + m.partCalls
+                + "/"
+                + m.partCommits
+                + "/"
+                + m.partsSkippedForCapture
+                + " unloadCancellations="
+                + state.unloadCancellations,
+            "capture calls/total/MaxMs=" + m.captureCalls
+                + "/"
+                + ms(m.captureNanos)
+                + "/"
+                + ms(m.captureMaxNanos)
+                + " existingMaxSnapshotUnitMs="
+                + ms(state.maxSnapshotUnitNanos)
+                + " staleJobs="
+                + state.staleJobs
+                + " overruns="
+                + state.budgetOverruns
+                + " (last three lifetime)",
+            performanceLogStatus() };
     }
 
     /** Reset only transient statistics, not work queues, snapshots, history or mass. */
@@ -397,10 +511,13 @@ public final class WorldRuntime implements AutoCloseable {
             lastLogSnapshotMisses = provider.diagnostics().misses;
             lastLogPublished = state.geometryMetrics.publishCalls;
             captureLogGeometryBaseline(state.geometryMetrics);
-            System.arraycopy(state.geometryMetrics.safeSnapshot(), 0, lastSafeTotals, 0,
-                    GeometryMetrics.SAFE_COUNTER_COUNT);
-            System.arraycopy(state.geometryMetrics.phaseNanos, 0, lastLogPhaseNanos, 0,
-                    GeometryMetrics.PHASE_COUNT);
+            System.arraycopy(
+                state.geometryMetrics.safeSnapshot(),
+                0,
+                lastSafeTotals,
+                0,
+                GeometryMetrics.SAFE_COUNTER_COUNT);
+            System.arraycopy(state.geometryMetrics.phaseNanos, 0, lastLogPhaseNanos, 0, GeometryMetrics.PHASE_COUNT);
             lastLogFrontNanos = state.geometryMetrics.frontNanos;
             lastLogInvalidateNanos = provider.diagnostics().invalidateNanos;
             lastLogEvicted = provider.diagnostics().evictedSnapshots;
@@ -420,8 +537,9 @@ public final class WorldRuntime implements AutoCloseable {
             lastLogSlowGeometryTicks = perfSlowGeometryTicks;
             lastLogBuildQueue = state.geometryQueues()[0];
             nextPerfLogTick = lastLogTick + PERF_LOG_TICKS;
-            writePerformanceLog("SMOG-PERF EVENT enabled dim=" + state.dimension
-                    + " periodTicks=" + PERF_LOG_TICKS, false);
+            writePerformanceLog(
+                "SMOG-PERF EVENT enabled dim=" + state.dimension + " periodTicks=" + PERF_LOG_TICKS,
+                false);
         } else {
             writePerformanceLog("SMOG-PERF EVENT disabled dim=" + state.dimension, false);
         }
@@ -442,21 +560,34 @@ public final class WorldRuntime implements AutoCloseable {
     /** Emit a recognizable one-off record without waiting for the periodic interval. */
     public void testPerformanceLogging() {
         provider.checkThread();
-        writePerformanceLog("SMOG-PERF TEST dim=" + state.dimension
-                + " worldTick=" + world.getTotalWorldTime()
-                + " expectedFile=" + performanceFileLog.path(), true);
+        writePerformanceLog(
+            "SMOG-PERF TEST dim=" + state.dimension
+                + " worldTick="
+                + world.getTotalWorldTime()
+                + " expectedFile="
+                + performanceFileLog.path(),
+            true);
     }
 
     public String performanceLogStatus() {
         provider.checkThread();
-        return "perfLog attempts/queued/written/rejected/ioErrors=" + perfLogAttempts + "/"
-                + performanceFileLog.queued() + "/" + performanceFileLog.written() + "/"
-                + performanceFileLog.rejected() + "/" + performanceFileLog.errors()
-                + " lastAttemptTick=" + lastPerfLogAttemptTick
-                + " file=" + performanceFileLog.path()
-                + " csvFile=" + performanceFileLog.csvPath()
-                + (performanceFileLog.lastError().isEmpty() ? ""
-                        : " lastError=" + performanceFileLog.lastError());
+        return "perfLog attempts/queued/written/rejected/ioErrors=" + perfLogAttempts
+            + "/"
+            + performanceFileLog.queued()
+            + "/"
+            + performanceFileLog.written()
+            + "/"
+            + performanceFileLog.rejected()
+            + "/"
+            + performanceFileLog.errors()
+            + " lastAttemptTick="
+            + lastPerfLogAttemptTick
+            + " file="
+            + performanceFileLog.path()
+            + " csvFile="
+            + performanceFileLog.csvPath()
+            + (performanceFileLog.lastError()
+                .isEmpty() ? "" : " lastError=" + performanceFileLog.lastError());
     }
 
     private void captureLogGeometryBaseline(GeometryMetrics m) {
@@ -491,10 +622,11 @@ public final class WorldRuntime implements AutoCloseable {
         for (int i = 0; i < safe.length; i++) {
             safe[i] = safeNow[i] - lastSafeTotals[i];
         }
-        long freshBuildNanos = Math.max(0, safe[GeometryMetrics.SAFE_BUILD_NANOS]
-                - safe[GeometryMetrics.SAFE_REFRESH_REBUILD_NANOS]);
-        long otherNanos = Math.max(0, safe[GeometryMetrics.SAFE_ELAPSED_NANOS]
-                - safe[GeometryMetrics.SAFE_WORLD_CHECK_NANOS]
+        long freshBuildNanos = Math
+            .max(0, safe[GeometryMetrics.SAFE_BUILD_NANOS] - safe[GeometryMetrics.SAFE_REFRESH_REBUILD_NANOS]);
+        long otherNanos = Math.max(
+            0,
+            safe[GeometryMetrics.SAFE_ELAPSED_NANOS] - safe[GeometryMetrics.SAFE_WORLD_CHECK_NANOS]
                 - safe[GeometryMetrics.SAFE_CONTACT_CHECK_NANOS]
                 - safe[GeometryMetrics.SAFE_REFRESH_REQUEST_NANOS]
                 - safe[GeometryMetrics.SAFE_BUILD_NANOS]
@@ -511,126 +643,227 @@ public final class WorldRuntime implements AutoCloseable {
             phases.append(ms(m.phaseNanos[phase] - lastLogPhaseNanos[phase]));
         }
         String message = "SMOG-PERF SAMPLE dim=" + state.dimension
-                + " periodTicks=" + period
-                + " runtimeAvgMs=" + ms((perfTickNanos - lastLogRuntimeNanos) / period)
-                + " geometryAvgMs=" + ms((m.geometryNanos - lastLogGeometryNanos) / period)
-                + " phaseMs(snap/halo/part/inner/outer)=" + phases
-                + " snapshotBuildMs=" + ms(p.buildNanos - lastLogSnapshotNanos)
-                + " snapshotMisses=" + (p.misses - lastLogSnapshotMisses)
-                + " cacheEvicted=" + (p.evictedSnapshots - lastLogEvicted)
-                + " cacheInvalidMs=" + ms(p.invalidateNanos - lastLogInvalidateNanos)
-                + " frontMs=" + ms(m.frontNanos - lastLogFrontNanos)
-                + " frontScans=" + (m.frontScans - lastLogFrontScans)
-                + " staleJobs=" + (m.staleJobs - lastLogStaleJobs)
-                + " contactsRefreshes=" + (m.contactRefreshes - lastLogContactRefreshes)
-                + " published=" + (m.publishCalls - lastLogPublished)
-                + " preparedAccepted=" + (m.preparedAccepted - lastLogPreparedAccepted)
-                + " preparedLimit=" + state.preparedLimit()
-                + " safeWindows(opened/closed/withPublish)="
-                        + (m.safeWindowsOpened - lastLogWindowsOpened) + "/"
-                        + (m.safeWindowsClosed - lastLogWindowsClosed) + "/"
-                        + (m.safeWindowsWithPublish - lastLogWindowsWithPublish)
-                + " windowPublications=" + (m.safeWindowPublishTotal - lastLogWindowPublications)
-                + " windowMaxPublished=" + m.safeWindowMaxPublished
-                + " windowCurrentPublished=" + m.safeWindowCurrentPublished
-                + " eligibleCalls=" + (m.eligibleGeometryCalls - lastLogEligibleCalls)
-                + " validation(worldCount/contactCount)="
-                        + (m.worldValidations - lastLogWorldChecks) + "/"
-                        + (m.contactValidations - lastLogContactsChecks)
-                + " validationMs(world/contact)="
-                        + ms(m.worldValidationNanos - lastLogWorldCheckNanos) + "/"
-                        + ms(m.contactValidationNanos - lastLogContactsCheckNanos)
-                + " contactsRefreshMs(request/rebuild)="
-                        + ms(m.refreshRequestNanos - lastLogRefreshRequestNanos) + "/"
-                        + ms(m.refreshAdvanceNanos - lastLogRefreshAdvanceNanos)
-                + " agePublishedTicks(avgQueued/maxQueued/avgPrepared/maxPrepared)="
-                        + (newQueueWaits == 0 ? -1
-                                : (m.queueWaitTotalTicks - lastLogQueueWaitTicks) / newQueueWaits)
-                        + "/" + m.queueWaitMaxTicks + "/"
-                        + (newPreparedWaits == 0 ? -1
-                                : (m.preparedWaitTotalTicks - lastLogPreparedWaitTicks)
-                                        / newPreparedWaits)
-                        + "/" + m.preparedWaitMaxTicks
-                + " queueHeadAgeTicks(build/prepared)=" + heads[0] + "/" + heads[1]
-                + " queues(build/job/prepared/front)=" + queues[0] + "/" + queues[1]
-                        + "/" + queues[2] + "/" + queues[3]
-                + " buildQueueDelta=" + (queues[0] - lastLogBuildQueue)
-                + " geomExit(budget/idleBacklog/solver/capture/preparedFull)="
-                        + (m.budgetEndCalls - lastLogBudgetEnd) + "/"
-                        + (m.idleWithBacklogCalls - lastLogIdleWithBacklog) + "/"
-                        + (m.waitSolverCalls - lastLogWaitSolver) + "/"
-                        + (m.waitCaptureCalls - lastLogWaitCapture) + "/"
-                        + (m.preparedFullCalls - lastLogPreparedFull)
-                + " lawParts(tried/committed/skippedCapture)="
-                        + (m.partCalls - lastLogPartCalls) + "/"
-                        + (m.partCommits - lastLogPartCommits) + "/"
-                        + (m.partsSkippedForCapture - lastLogCaptureSkips)
-                + " unloadCancellations="
-                        + (state.unloadCancellations - lastLogUnloadCancellations)
-                + " modelLagSec=" + String.format(Locale.ROOT, "%.3f",
-                        state.gameTime() - state.modelTime())
-                + " pendingPulses=" + pending.size() + " frames=" + state.pendingIntervals()
-                + " slow10ms(runtime/geometry)="
-                        + (perfSlowRuntimeTicks - lastLogSlowRuntimeTicks) + "/"
-                        + (perfSlowGeometryTicks - lastLogSlowGeometryTicks)
-                + " captureMaxMs=" + ms(m.captureMaxNanos)
-                + " safeProfile(calls/usedMs/budgetMs/publishMs/eventsMs/freshBuildMs/otherMs)="
-                + safeCalls + "/" + ms(safe[GeometryMetrics.SAFE_ELAPSED_NANOS])
-                + "/" + ms(safe[GeometryMetrics.SAFE_BUDGET_NANOS])
-                + "/" + ms(safe[GeometryMetrics.SAFE_PUBLISH_NANOS])
-                + "/" + ms(safe[GeometryMetrics.SAFE_APPLY_EVENTS_NANOS])
-                + "/" + ms(freshBuildNanos) + "/" + ms(otherNanos);
+            + " periodTicks="
+            + period
+            + " runtimeAvgMs="
+            + ms((perfTickNanos - lastLogRuntimeNanos) / period)
+            + " geometryAvgMs="
+            + ms((m.geometryNanos - lastLogGeometryNanos) / period)
+            + " phaseMs(snap/halo/part/inner/outer)="
+            + phases
+            + " snapshotBuildMs="
+            + ms(p.buildNanos - lastLogSnapshotNanos)
+            + " snapshotMisses="
+            + (p.misses - lastLogSnapshotMisses)
+            + " cacheEvicted="
+            + (p.evictedSnapshots - lastLogEvicted)
+            + " cacheInvalidMs="
+            + ms(p.invalidateNanos - lastLogInvalidateNanos)
+            + " frontMs="
+            + ms(m.frontNanos - lastLogFrontNanos)
+            + " frontScans="
+            + (m.frontScans - lastLogFrontScans)
+            + " staleJobs="
+            + (m.staleJobs - lastLogStaleJobs)
+            + " contactsRefreshes="
+            + (m.contactRefreshes - lastLogContactRefreshes)
+            + " published="
+            + (m.publishCalls - lastLogPublished)
+            + " preparedAccepted="
+            + (m.preparedAccepted - lastLogPreparedAccepted)
+            + " preparedLimit="
+            + state.preparedLimit()
+            + " safeWindows(opened/closed/withPublish)="
+            + (m.safeWindowsOpened - lastLogWindowsOpened)
+            + "/"
+            + (m.safeWindowsClosed - lastLogWindowsClosed)
+            + "/"
+            + (m.safeWindowsWithPublish - lastLogWindowsWithPublish)
+            + " windowPublications="
+            + (m.safeWindowPublishTotal - lastLogWindowPublications)
+            + " windowMaxPublished="
+            + m.safeWindowMaxPublished
+            + " windowCurrentPublished="
+            + m.safeWindowCurrentPublished
+            + " eligibleCalls="
+            + (m.eligibleGeometryCalls - lastLogEligibleCalls)
+            + " validation(worldCount/contactCount)="
+            + (m.worldValidations - lastLogWorldChecks)
+            + "/"
+            + (m.contactValidations - lastLogContactsChecks)
+            + " validationMs(world/contact)="
+            + ms(m.worldValidationNanos - lastLogWorldCheckNanos)
+            + "/"
+            + ms(m.contactValidationNanos - lastLogContactsCheckNanos)
+            + " contactsRefreshMs(request/rebuild)="
+            + ms(m.refreshRequestNanos - lastLogRefreshRequestNanos)
+            + "/"
+            + ms(m.refreshAdvanceNanos - lastLogRefreshAdvanceNanos)
+            + " agePublishedTicks(avgQueued/maxQueued/avgPrepared/maxPrepared)="
+            + (newQueueWaits == 0 ? -1 : (m.queueWaitTotalTicks - lastLogQueueWaitTicks) / newQueueWaits)
+            + "/"
+            + m.queueWaitMaxTicks
+            + "/"
+            + (newPreparedWaits == 0 ? -1 : (m.preparedWaitTotalTicks - lastLogPreparedWaitTicks) / newPreparedWaits)
+            + "/"
+            + m.preparedWaitMaxTicks
+            + " queueHeadAgeTicks(build/prepared)="
+            + heads[0]
+            + "/"
+            + heads[1]
+            + " queues(build/job/prepared/front)="
+            + queues[0]
+            + "/"
+            + queues[1]
+            + "/"
+            + queues[2]
+            + "/"
+            + queues[3]
+            + " buildQueueDelta="
+            + (queues[0] - lastLogBuildQueue)
+            + " geomExit(budget/idleBacklog/solver/capture/preparedFull)="
+            + (m.budgetEndCalls - lastLogBudgetEnd)
+            + "/"
+            + (m.idleWithBacklogCalls - lastLogIdleWithBacklog)
+            + "/"
+            + (m.waitSolverCalls - lastLogWaitSolver)
+            + "/"
+            + (m.waitCaptureCalls - lastLogWaitCapture)
+            + "/"
+            + (m.preparedFullCalls - lastLogPreparedFull)
+            + " lawParts(tried/committed/skippedCapture)="
+            + (m.partCalls - lastLogPartCalls)
+            + "/"
+            + (m.partCommits - lastLogPartCommits)
+            + "/"
+            + (m.partsSkippedForCapture - lastLogCaptureSkips)
+            + " unloadCancellations="
+            + (state.unloadCancellations - lastLogUnloadCancellations)
+            + " modelLagSec="
+            + String.format(Locale.ROOT, "%.3f", state.gameTime() - state.modelTime())
+            + " pendingPulses="
+            + pending.size()
+            + " frames="
+            + state.pendingIntervals()
+            + " slow10ms(runtime/geometry)="
+            + (perfSlowRuntimeTicks - lastLogSlowRuntimeTicks)
+            + "/"
+            + (perfSlowGeometryTicks - lastLogSlowGeometryTicks)
+            + " captureMaxMs="
+            + ms(m.captureMaxNanos)
+            + " safeProfile(calls/usedMs/budgetMs/publishMs/eventsMs/freshBuildMs/otherMs)="
+            + safeCalls
+            + "/"
+            + ms(safe[GeometryMetrics.SAFE_ELAPSED_NANOS])
+            + "/"
+            + ms(safe[GeometryMetrics.SAFE_BUDGET_NANOS])
+            + "/"
+            + ms(safe[GeometryMetrics.SAFE_PUBLISH_NANOS])
+            + "/"
+            + ms(safe[GeometryMetrics.SAFE_APPLY_EVENTS_NANOS])
+            + "/"
+            + ms(freshBuildNanos)
+            + "/"
+            + ms(otherNanos);
         writePerformanceLog(message, false);
         StringBuilder csv = new StringBuilder(400);
-        csv.append(java.time.Instant.now().toString()).append(",1,")
-                .append(state.dimension).append(',').append(now).append(',')
-                .append(period).append(',').append(state.preparedLimit()).append(',')
-                .append(ms((perfTickNanos - lastLogRuntimeNanos) / period)).append(',')
-                .append(ms((m.geometryNanos - lastLogGeometryNanos) / period)).append(',')
-                .append(ms(m.phaseNanos[GeometryMetrics.SNAPSHOTS]
-                        - lastLogPhaseNanos[GeometryMetrics.SNAPSHOTS])).append(',')
-                .append(ms(m.phaseNanos[GeometryMetrics.HALO]
-                        - lastLogPhaseNanos[GeometryMetrics.HALO])).append(',')
-                .append(ms(m.phaseNanos[GeometryMetrics.PARTITION]
-                        - lastLogPhaseNanos[GeometryMetrics.PARTITION])).append(',')
-                .append(ms(m.phaseNanos[GeometryMetrics.INTERNAL_CONTACTS]
-                        - lastLogPhaseNanos[GeometryMetrics.INTERNAL_CONTACTS])).append(',')
-                .append(ms(m.phaseNanos[GeometryMetrics.EXTERNAL_CONTACTS]
-                        - lastLogPhaseNanos[GeometryMetrics.EXTERNAL_CONTACTS])).append(',')
-                .append(ms(m.frontNanos - lastLogFrontNanos)).append(',')
-                .append(m.contactRefreshes - lastLogContactRefreshes).append(',')
-                .append(m.preparedAccepted - lastLogPreparedAccepted).append(',')
-                .append(m.partsSkippedForCapture - lastLogCaptureSkips).append(',')
-                .append(safeCalls).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_ELAPSED_NANOS])).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_BUDGET_NANOS])).append(',')
-                .append(ms(m.safeCallMaxNanos)).append(',')
-                .append(safe[GeometryMetrics.SAFE_BUDGET_ENDS]).append(',')
-                .append(safe[GeometryMetrics.SAFE_IDLE_ENDS]).append(',')
-                .append(safeCalls == 0 ? -1
-                        : safe[GeometryMetrics.SAFE_PREPARED_START_SUM] / safeCalls).append(',')
-                .append(safeCalls == 0 ? -1
-                        : safe[GeometryMetrics.SAFE_PREPARED_END_SUM] / safeCalls).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_WORLD_CHECK_NANOS])).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_CONTACT_CHECK_NANOS])).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_REFRESH_REQUEST_NANOS])).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_REFRESH_REBUILD_NANOS])).append(',')
-                .append(ms(freshBuildNanos)).append(',')
-                .append(ms(safe[GeometryMetrics.SAFE_PUBLISH_NANOS])).append(',')
-                .append(String.format(Locale.ROOT, "%.3f", safePublished == 0 ? 0.0
-                        : safe[GeometryMetrics.SAFE_PUBLISH_NANOS] / (1000.0 * safePublished)))
-                .append(',').append(ms(safe[GeometryMetrics.SAFE_APPLY_EVENTS_NANOS]))
-                .append(',').append(ms(safe[GeometryMetrics.SAFE_FRONT_NANOS]))
-                .append(',').append(ms(otherNanos))
-                .append(',').append(safePublished)
-                .append(',').append(m.safeWindowsOpened - lastLogWindowsOpened)
-                .append(',').append(m.safeWindowsWithPublish - lastLogWindowsWithPublish)
-                .append(',').append(m.safeWindowMaxPublished)
-                .append(',').append(queues[0]).append(',').append(queues[2])
-                .append(',').append(queues[3])
-                .append(',').append(m.staleJobs - lastLogStaleJobs)
-                .append(',').append(String.format(Locale.ROOT, "%.3f",
-                        state.gameTime() - state.modelTime()));
+        csv.append(
+            java.time.Instant.now()
+                .toString())
+            .append(",1,")
+            .append(state.dimension)
+            .append(',')
+            .append(now)
+            .append(',')
+            .append(period)
+            .append(',')
+            .append(state.preparedLimit())
+            .append(',')
+            .append(ms((perfTickNanos - lastLogRuntimeNanos) / period))
+            .append(',')
+            .append(ms((m.geometryNanos - lastLogGeometryNanos) / period))
+            .append(',')
+            .append(ms(m.phaseNanos[GeometryMetrics.SNAPSHOTS] - lastLogPhaseNanos[GeometryMetrics.SNAPSHOTS]))
+            .append(',')
+            .append(ms(m.phaseNanos[GeometryMetrics.HALO] - lastLogPhaseNanos[GeometryMetrics.HALO]))
+            .append(',')
+            .append(ms(m.phaseNanos[GeometryMetrics.PARTITION] - lastLogPhaseNanos[GeometryMetrics.PARTITION]))
+            .append(',')
+            .append(
+                ms(
+                    m.phaseNanos[GeometryMetrics.INTERNAL_CONTACTS]
+                        - lastLogPhaseNanos[GeometryMetrics.INTERNAL_CONTACTS]))
+            .append(',')
+            .append(
+                ms(
+                    m.phaseNanos[GeometryMetrics.EXTERNAL_CONTACTS]
+                        - lastLogPhaseNanos[GeometryMetrics.EXTERNAL_CONTACTS]))
+            .append(',')
+            .append(ms(m.frontNanos - lastLogFrontNanos))
+            .append(',')
+            .append(m.contactRefreshes - lastLogContactRefreshes)
+            .append(',')
+            .append(m.preparedAccepted - lastLogPreparedAccepted)
+            .append(',')
+            .append(m.partsSkippedForCapture - lastLogCaptureSkips)
+            .append(',')
+            .append(safeCalls)
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_ELAPSED_NANOS]))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_BUDGET_NANOS]))
+            .append(',')
+            .append(ms(m.safeCallMaxNanos))
+            .append(',')
+            .append(safe[GeometryMetrics.SAFE_BUDGET_ENDS])
+            .append(',')
+            .append(safe[GeometryMetrics.SAFE_IDLE_ENDS])
+            .append(',')
+            .append(safeCalls == 0 ? -1 : safe[GeometryMetrics.SAFE_PREPARED_START_SUM] / safeCalls)
+            .append(',')
+            .append(safeCalls == 0 ? -1 : safe[GeometryMetrics.SAFE_PREPARED_END_SUM] / safeCalls)
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_WORLD_CHECK_NANOS]))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_CONTACT_CHECK_NANOS]))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_REFRESH_REQUEST_NANOS]))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_REFRESH_REBUILD_NANOS]))
+            .append(',')
+            .append(ms(freshBuildNanos))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_PUBLISH_NANOS]))
+            .append(',')
+            .append(
+                String.format(
+                    Locale.ROOT,
+                    "%.3f",
+                    safePublished == 0 ? 0.0 : safe[GeometryMetrics.SAFE_PUBLISH_NANOS] / (1000.0 * safePublished)))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_APPLY_EVENTS_NANOS]))
+            .append(',')
+            .append(ms(safe[GeometryMetrics.SAFE_FRONT_NANOS]))
+            .append(',')
+            .append(ms(otherNanos))
+            .append(',')
+            .append(safePublished)
+            .append(',')
+            .append(m.safeWindowsOpened - lastLogWindowsOpened)
+            .append(',')
+            .append(m.safeWindowsWithPublish - lastLogWindowsWithPublish)
+            .append(',')
+            .append(m.safeWindowMaxPublished)
+            .append(',')
+            .append(queues[0])
+            .append(',')
+            .append(queues[2])
+            .append(',')
+            .append(queues[3])
+            .append(',')
+            .append(m.staleJobs - lastLogStaleJobs)
+            .append(',')
+            .append(String.format(Locale.ROOT, "%.3f", state.gameTime() - state.modelTime()));
         performanceFileLog.offerCsv(PERF_CSV_HEADER, csv.toString());
         lastLogTick = now;
         lastLogRuntimeNanos = perfTickNanos;
@@ -666,8 +899,7 @@ public final class WorldRuntime implements AutoCloseable {
         BlockPos position = pulse.position;
         if (pulse.amount < 0) {
             if (pulse.chunkOnly || pulse.adjacent) {
-                SpatialQueries.removeChunk(
-                        state, position.x >> 4, position.z >> 4, -(double) pulse.amount);
+                SpatialQueries.removeChunk(state, position.x >> 4, position.z >> 4, -(double) pulse.amount);
             } else {
                 state.queueRemoveMass(position, -(double) pulse.amount);
             }
@@ -689,9 +921,8 @@ public final class WorldRuntime implements AutoCloseable {
         return false;
     }
 
-    private static final int[][] SIDES = {
-        {0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}
-    };
+    private static final int[][] SIDES = { { 0, 1, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+        { 0, -1, 0 } };
 
     /**
      * Unknown Y: choose the first gas voxel in every loaded section, weighted by section gas
@@ -702,13 +933,8 @@ public final class WorldRuntime implements AutoCloseable {
         List<Integer> volumes = new ArrayList<>();
         int total = 0;
         for (int section = 0; section < 16; section++) {
-            ImmutableCubeSnapshot snapshot =
-                    provider.snapshotIfReady(
-                            new CubeKey(
-                                    state.dimension,
-                                    pulse.position.x >> 4,
-                                    section,
-                                    pulse.position.z >> 4));
+            ImmutableCubeSnapshot snapshot = provider
+                .snapshotIfReady(new CubeKey(state.dimension, pulse.position.x >> 4, section, pulse.position.z >> 4));
             if (snapshot == null) {
                 continue;
             }
@@ -737,10 +963,7 @@ public final class WorldRuntime implements AutoCloseable {
         }
         double remaining = pulse.amount;
         for (int i = 0; i < points.size(); i++) {
-            double part =
-                    i == points.size() - 1
-                            ? remaining
-                            : pulse.amount * (double) volumes.get(i) / total;
+            double part = i == points.size() - 1 ? remaining : pulse.amount * (double) volumes.get(i) / total;
             if (!state.queueAddMass(points.get(i), part)) {
                 throw new IllegalStateException("SMOG snapshot changed during delivery");
             }
@@ -774,8 +997,7 @@ public final class WorldRuntime implements AutoCloseable {
             state.close();
             closed = true;
         } catch (Exception exception) {
-            throw new IllegalStateException(
-                    "SMOG final save failed; dimension not closed", exception);
+            throw new IllegalStateException("SMOG final save failed; dimension not closed", exception);
         }
     }
 }
