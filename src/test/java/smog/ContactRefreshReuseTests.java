@@ -40,12 +40,12 @@ public final class ContactRefreshReuseTests {
 
     private static DimensionState.Geometry neighborGeometry(int id, int salt) {
         DimensionState.Geometry g = new DimensionState.Geometry();
-        g.labels = new int[512];
-        g.distance = new byte[512];
-        Arrays.fill(g.labels, 0);
+        g.labels = VoxelLabels.uniform(0);
+        byte[] distance = new byte[512];
         for (int p = 0; p < 512; p++) {
-            g.distance[p] = (byte) ((p + salt) % 6);
+            distance[p] = (byte) ((p + salt) % 6);
         }
+        g.distance = VoxelDistance.of(distance);
         g.ids = new int[] { id };
         g.volumes = new int[] { 512 };
         return g;

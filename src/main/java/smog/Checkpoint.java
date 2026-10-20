@@ -29,8 +29,8 @@ import java.util.TreeMap;
 import java.util.UUID;
 
 /**
- * Standalone v1 checkpoint. Single generation payload prevents mixed cube cuts. The payload
- * contains spatial memberships and masses, never runtime topology.
+ * Authoritative checkpoint. Streaming compressed v2 writer, compatible v1 reader/export.
+ * A generation contains spatial memberships and masses, never runtime topology.
  */
 final class Checkpoint {
 
@@ -39,6 +39,8 @@ final class Checkpoint {
     static final class Data {
 
         int dimension, windowTick, parts;
+        int formatVersion;
+        long bytes, readNanos, decodeNanos;
 
         boolean cycling;
 
@@ -197,31 +199,41 @@ final class Checkpoint {
                 throw new IOException("Checkpoint writer already active");
             }
             Path manifest = dir.resolve("manifest"), previous = dir.resolve("manifest.previous");
-            Manifest current = Files.exists(manifest) ? readManifest(manifest) : null;
+            Manifest current = null;
+            if (Files.exists(manifest)) {
+                try {
+                    current = readManifest(manifest);
+                } catch (IOException invalidManifest) {
+                    current = readManifest(previous);
+                    verifyGeneration(dir, current);
+                }
+            }
             long actual = current == null ? 0 : current.generation;
             if (actual != expected) {
                 throw new IOException(
                     "Stale checkpoint writer: expected generation " + expected + ", current " + actual);
             }
             long gen = Math.addExact(actual, 1);
-            checkSize(data);
-            byte[] payload = encode(data);
-            if (payload.length > MAX_BYTES) {
-                throw new IOException("Checkpoint exceeds 256 MiB format limit");
-            }
-            byte[] hash = sha(payload);
             Path target = dir.resolve("generation-" + gen + ".smog");
-            atomicWrite(target, payload);
+            if (Boolean.getBoolean("smog.checkpointV1")) {
+                checkSize(data);
+                byte[] payload = encode(data);
+                if (payload.length > MAX_BYTES) throw new IOException("Checkpoint exceeds 256 MiB format limit");
+                atomicWrite(target, payload);
+            } else {
+                CheckpointV2.write(target, data);
+            }
+            byte[] hash = RecordCodec.sha(target);
             // Retain only a verified previous generation. Corrupt current state is never promoted.
             long previousGeneration = 0;
             if (current != null) {
                 try {
-                    readGeneration(dir, current);
-                    atomicWrite(previous, Files.readAllBytes(manifest));
+                    verifyGeneration(dir, current);
+                    atomicWrite(previous, manifestBytes(current));
                     previousGeneration = current.generation;
                 } catch (IOException brokenCurrent) {
                     Manifest good = readManifest(previous);
-                    readGeneration(dir, good);
+                    verifyGeneration(dir, good);
                     previousGeneration = good.generation;
                 }
             }
@@ -272,6 +284,17 @@ final class Checkpoint {
         } finally {
             Files.deleteIfExists(tmp);
         }
+    }
+
+    private static byte[] manifestBytes(Manifest manifest) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(48);
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeInt(MAGIC);
+            out.writeInt(VERSION);
+            out.writeLong(manifest.generation);
+            out.write(manifest.hash);
+        }
+        return bytes.toByteArray();
     }
 
     private static void forceDirectory(Path dir) throws IOException {
@@ -330,17 +353,39 @@ final class Checkpoint {
     }
 
     private static Data readGeneration(Path dir, Manifest m) throws IOException {
+        return readGeneration(dir, m, true);
+    }
+
+    private static void verifyGeneration(Path dir, Manifest m) throws IOException {
+        readGeneration(dir, m, false);
+    }
+
+    private static Data readGeneration(Path dir, Manifest m, boolean retain) throws IOException {
         Path path = dir.resolve("generation-" + m.generation + ".smog");
         long size = Files.size(path);
-        if (size < 16 || size > MAX_BYTES) {
-            throw new IOException("Invalid payload size");
-        }
-        byte[] bytes = Files.readAllBytes(path);
-        if (!MessageDigest.isEqual(sha(bytes), m.hash)) {
+        if (size < 16 || size > CheckpointV2.MAX_FILE) throw new IOException("Invalid payload size");
+        long readStart = System.nanoTime();
+        if (!MessageDigest.isEqual(RecordCodec.sha(path), m.hash))
             throw new IOException("Checkpoint checksum mismatch");
-        }
-        try {
-            return decode(bytes);
+        long hashNanos = System.nanoTime() - readStart;
+        try (DataInputStream input = new DataInputStream(Files.newInputStream(path))) {
+            if (input.readInt() != MAGIC) throw new IOException("Checkpoint magic");
+            int version = input.readInt();
+            Data data;
+            long decodeStart = System.nanoTime();
+            if (version == 2) {
+                if (retain) data = CheckpointV2.read(path);
+                else {
+                    CheckpointV2.verify(path);
+                    data = new Data();
+                }
+            } else if (version == 1 && size <= MAX_BYTES) data = readV1Stream(path, retain);
+            else throw new IOException("Unsupported checkpoint version");
+            data.formatVersion = version;
+            data.bytes = size;
+            data.readNanos = hashNanos;
+            data.decodeNanos = System.nanoTime() - decodeStart;
+            return data;
         } catch (IllegalArgumentException | ArithmeticException e) {
             throw new IOException("Invalid checkpoint values", e);
         }
@@ -373,205 +418,242 @@ final class Checkpoint {
         }
     }
 
-    private static byte[] encode(Data d) throws IOException {
+    static byte[] encode(Data d) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(bytes)) {
-            out.writeInt(MAGIC);
-            out.writeInt(VERSION);
-            out.writeInt(d.dimension);
-            config(out, d.config);
-            out.writeLong(d.ticks);
-            out.writeLong(d.steps);
-            out.writeLong(d.windows);
-            out.writeLong(d.generation);
-            out.writeInt(d.windowTick);
-            out.writeInt(d.parts);
-            out.writeBoolean(d.cycling);
-            out.writeDouble(d.injected);
-            out.writeDouble(d.escaped);
-            out.writeDouble(d.rejected);
-            out.writeDouble(d.removed);
-            out.writeDouble(d.openRejected);
-            out.writeInt(d.sources.size());
-            for (DimensionState.Source s : d.sources) {
-                pos(out, s.position);
-                out.writeDouble(s.rate);
-                out.writeInt(s.phase);
-            }
-            positions(out, d.open);
-            out.writeInt(d.frames.size());
-            for (DimensionState.Frame f : d.frames) {
-                out.writeInt(f.positions.length);
-                for (int i = 0; i < f.positions.length; i++) {
-                    pos(out, f.positions[i]);
-                    out.writeDouble(f.amounts[i]);
-                }
-                out.writeDouble(f.rejected);
-            }
+            writeGlobals(d, out);
             out.writeInt(d.cells.size());
-            for (CellData c : d.cells) {
-                out.writeInt(c.key.x);
-                out.writeInt(c.key.y);
-                out.writeInt(c.key.z);
-                out.writeBoolean(c.mass != null);
-                if (c.mass != null) {
-                    out.writeInt(c.mass.masses.length);
-                    for (int i = 0; i < c.mass.masses.length; i++) {
-                        out.writeShort(c.mass.volumes[i]);
-                        out.writeDouble(c.mass.masses[i]);
-                    }
-                    for (int label : c.mass.labels) {
-                        out.writeShort(label);
-                    }
-                }
-                local(out, c.trapped);
-                local(out, c.waiting);
-                out.writeInt(c.events.size());
-                for (Map.Entry<Integer, DimensionState.Event> e : c.events.entrySet()) {
-                    out.writeShort(e.getKey());
-                    out.writeDouble(e.getValue().add);
-                    out.writeDouble(e.getValue().remove);
-                }
-            }
+            for (CellData c : d.cells) writeCell(out, c);
         }
         return bytes.toByteArray();
     }
 
-    private static Data decode(byte[] bytes) throws IOException {
+    static void writeGlobals(Data d, DataOutputStream out) throws IOException {
+        out.writeInt(MAGIC);
+        out.writeInt(VERSION);
+        out.writeInt(d.dimension);
+        config(out, d.config);
+        out.writeLong(d.ticks);
+        out.writeLong(d.steps);
+        out.writeLong(d.windows);
+        out.writeLong(d.generation);
+        out.writeInt(d.windowTick);
+        out.writeInt(d.parts);
+        out.writeBoolean(d.cycling);
+        out.writeDouble(d.injected);
+        out.writeDouble(d.escaped);
+        out.writeDouble(d.rejected);
+        out.writeDouble(d.removed);
+        out.writeDouble(d.openRejected);
+        out.writeInt(d.sources.size());
+        for (DimensionState.Source s : d.sources) {
+            pos(out, s.position);
+            out.writeDouble(s.rate);
+            out.writeInt(s.phase);
+        }
+        positions(out, d.open);
+        out.writeInt(d.frames.size());
+        for (DimensionState.Frame f : d.frames) {
+            out.writeInt(f.positions.length);
+            for (int i = 0; i < f.positions.length; i++) {
+                pos(out, f.positions[i]);
+                out.writeDouble(f.amounts[i]);
+            }
+            out.writeDouble(f.rejected);
+        }
+    }
+
+    static void writeCell(DataOutputStream out, CellData c) throws IOException {
+        out.writeInt(c.key.x);
+        out.writeInt(c.key.y);
+        out.writeInt(c.key.z);
+        out.writeBoolean(c.mass != null);
+        if (c.mass != null) {
+            out.writeInt(c.mass.masses.length);
+            for (int i = 0; i < c.mass.masses.length; i++) {
+                out.writeShort(c.mass.volumes[i]);
+                out.writeDouble(c.mass.masses[i]);
+            }
+            for (int p = 0; p < 512; p++) {
+                out.writeShort(c.mass.labelAt(p));
+            }
+        }
+        local(out, c.trapped);
+        local(out, c.waiting);
+        out.writeInt(c.events.size());
+        for (Map.Entry<Integer, DimensionState.Event> e : c.events.entrySet()) {
+            out.writeShort(e.getKey());
+            out.writeDouble(e.getValue().add);
+            out.writeDouble(e.getValue().remove);
+        }
+    }
+
+    static Data readGlobals(DataInputStream in) throws IOException {
         Data d = new Data();
-        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (in.readInt() != MAGIC || in.readInt() != VERSION) {
-                throw new IOException("Unsupported checkpoint version");
+        if (in.readInt() != MAGIC || in.readInt() != VERSION) {
+            throw new IOException("Unsupported checkpoint version");
+        }
+        d.dimension = in.readInt();
+        d.config = config(in);
+        d.ticks = counter(in);
+        d.steps = counter(in);
+        d.windows = counter(in);
+        d.generation = counter(in);
+        d.windowTick = in.readInt();
+        d.parts = in.readInt();
+        d.cycling = in.readBoolean();
+        if (d.parts < 0
+            || (d.parts > 0 && d.ticks != Math.addExact(Math.multiplyExact(d.windows, (long) d.parts), d.windowTick))
+            || d.windowTick < 0
+            || (d.parts == 0 ? d.windowTick != 0 : d.windowTick >= d.parts)
+            || d.steps > d.windows) {
+            throw new IOException("Invalid clocks");
+        }
+        d.injected = mass(in);
+        d.escaped = mass(in);
+        d.rejected = mass(in);
+        d.removed = mass(in);
+        d.openRejected = mass(in);
+        Set<BlockPos> seen = new HashSet<>();
+        int n = count(in, 24);
+        for (int i = 0; i < n; i++) {
+            BlockPos p = pos(in, d.dimension);
+            if (!seen.add(p)) {
+                throw new IOException("Duplicate source");
             }
-            d.dimension = in.readInt();
-            d.config = config(in);
-            d.ticks = counter(in);
-            d.steps = counter(in);
-            d.windows = counter(in);
-            d.generation = counter(in);
-            d.windowTick = in.readInt();
-            d.parts = in.readInt();
-            d.cycling = in.readBoolean();
-            if (d.parts < 0
-                || (d.parts > 0
-                    && d.ticks != Math.addExact(Math.multiplyExact(d.windows, (long) d.parts), d.windowTick))
-                || d.windowTick < 0
-                || (d.parts == 0 ? d.windowTick != 0 : d.windowTick >= d.parts)
-                || d.steps > d.windows) {
-                throw new IOException("Invalid clocks");
+            double rate = mass(in);
+            int phase = in.readInt();
+            if (phase < 0 || phase >= d.config.cyclePeriod) {
+                throw new IOException("Invalid source phase");
             }
-            d.injected = mass(in);
-            d.escaped = mass(in);
-            d.rejected = mass(in);
-            d.removed = mass(in);
-            d.openRejected = mass(in);
-            Set<BlockPos> seen = new HashSet<>();
-            int n = count(in, 24);
-            for (int i = 0; i < n; i++) {
-                BlockPos p = pos(in, d.dimension);
-                if (!seen.add(p)) {
-                    throw new IOException("Duplicate source");
+            d.sources.add(new DimensionState.Source(p, rate, phase));
+        }
+        positions(in, d.dimension, d.open);
+        n = count(in, 12);
+        for (int i = 0; i < n; i++) {
+            int k = count(in, 20);
+            BlockPos[] p = new BlockPos[k];
+            double[] a = new double[k];
+            seen.clear();
+            for (int j = 0; j < k; j++) {
+                p[j] = pos(in, d.dimension);
+                a[j] = mass(in);
+                if (!seen.add(p[j])) {
+                    throw new IOException("Duplicate frame position");
                 }
-                double rate = mass(in);
-                int phase = in.readInt();
-                if (phase < 0 || phase >= d.config.cyclePeriod) {
-                    throw new IOException("Invalid source phase");
-                }
-                d.sources.add(new DimensionState.Source(p, rate, phase));
             }
-            positions(in, d.dimension, d.open);
-            n = count(in, 12);
-            for (int i = 0; i < n; i++) {
-                int k = count(in, 20);
-                BlockPos[] p = new BlockPos[k];
-                double[] a = new double[k];
-                seen.clear();
-                for (int j = 0; j < k; j++) {
-                    p[j] = pos(in, d.dimension);
-                    a[j] = mass(in);
-                    if (!seen.add(p[j])) {
-                        throw new IOException("Duplicate frame position");
-                    }
-                }
-                d.frames.add(new DimensionState.Frame(p, a, mass(in)));
-            }
-            if (d.frames.size() != d.windows - d.steps) {
-                throw new IOException("Missing emission interval");
-            }
-            Set<CellKey> cells = new HashSet<>();
-            n = count(in, 25);
-            double accounted = d.escaped + d.removed;
-            for (int i = 0; i < n; i++) {
-                CellData c = new CellData();
-                c.key = new CellKey(d.dimension, in.readInt(), in.readInt(), in.readInt());
-                c.key.block(511);
-                if (!cells.add(c.key)) {
-                    throw new IOException("Duplicate cell");
-                }
-                if (in.readBoolean()) {
-                    int size = in.readInt();
-                    if (size < 0 || size > 512) {
-                        throw new IOException("Invalid local node count");
-                    }
-                    int[] volumes = new int[size], counts = new int[size], labels = new int[512];
-                    double[] masses = new double[size];
-                    for (int j = 0; j < size; j++) {
-                        volumes[j] = in.readUnsignedShort();
-                        if (volumes[j] < 1 || volumes[j] > 512) {
-                            throw new IOException("Invalid volume");
-                        }
-                        masses[j] = mass(in);
-                        accounted += masses[j];
-                    }
-                    for (int p = 0; p < 512; p++) {
-                        int label = in.readShort();
-                        if (label < -1 || label >= size) {
-                            throw new IOException("Invalid membership");
-                        }
-                        labels[p] = label;
-                        if (label >= 0) {
-                            counts[label]++;
-                        }
-                    }
-                    if (!Arrays.equals(volumes, counts)) {
-                        throw new IOException("Volume/membership mismatch");
-                    }
-                    c.mass = new DimensionState.MassRecord(labels, volumes, masses);
-                }
-                local(in, c.trapped);
-                for (double m : c.trapped.values()) {
-                    accounted += m;
-                }
-                local(in, c.waiting);
-                int events = count(in, 18);
-                if (events > 512) {
-                    throw new IOException("Too many events");
-                }
-                for (int j = 0; j < events; j++) {
-                    int p = in.readUnsignedShort();
-                    if (p >= 512 || c.events.containsKey(p)) {
-                        throw new IOException("Invalid event position");
-                    }
-                    DimensionState.Event e = new DimensionState.Event();
-                    e.add = mass(in);
-                    e.remove = mass(in);
-                    c.events.put(p, e);
-                }
-                d.cells.add(c);
-            }
-            if (!Double.isFinite(accounted) || Math.abs(accounted - d.injected) > 1e-8 * Math.max(1, d.injected)) {
-                throw new IOException("Checkpoint ledger mismatch");
-            }
-            if (in.read() != -1) {
-                throw new IOException("Trailing checkpoint bytes");
-            }
+            d.frames.add(new DimensionState.Frame(p, a, mass(in)));
+        }
+        if (d.frames.size() != d.windows - d.steps) {
+            throw new IOException("Missing emission interval");
         }
         return d;
     }
 
+    static CellData readCell(DataInputStream in, int dimension) throws IOException {
+        CellData c = new CellData();
+        c.key = new CellKey(dimension, in.readInt(), in.readInt(), in.readInt());
+        c.key.block(511);
+        if (in.readBoolean()) {
+            int size = in.readInt();
+            if (size < 0 || size > 512) {
+                throw new IOException("Invalid local node count");
+            }
+            int[] volumes = new int[size], counts = new int[size], labels = new int[512];
+            double[] masses = new double[size];
+            for (int j = 0; j < size; j++) {
+                volumes[j] = in.readUnsignedShort();
+                if (volumes[j] < 1 || volumes[j] > 512) {
+                    throw new IOException("Invalid volume");
+                }
+                masses[j] = mass(in);
+            }
+            for (int p = 0; p < 512; p++) {
+                int label = in.readShort();
+                if (label < -1 || label >= size) {
+                    throw new IOException("Invalid membership");
+                }
+                labels[p] = label;
+                if (label >= 0) {
+                    counts[label]++;
+                }
+            }
+            if (!Arrays.equals(volumes, counts)) {
+                throw new IOException("Volume/membership mismatch");
+            }
+            c.mass = new DimensionState.MassRecord(labels, volumes, masses);
+        }
+        local(in, c.trapped);
+        local(in, c.waiting);
+        int events = count(in, 18);
+        if (events > 512) {
+            throw new IOException("Too many events");
+        }
+        for (int j = 0; j < events; j++) {
+            int p = in.readUnsignedShort();
+            if (p >= 512 || c.events.containsKey(p)) {
+                throw new IOException("Invalid event position");
+            }
+            DimensionState.Event e = new DimensionState.Event();
+            e.add = mass(in);
+            e.remove = mass(in);
+            c.events.put(p, e);
+        }
+        return c;
+    }
+
+    static void validateLedger(Data d) throws IOException {
+        double accounted = d.escaped + d.removed;
+        for (CellData c : d.cells) {
+            if (c.mass != null) accounted += c.mass.total();
+            for (double m : c.trapped.values()) accounted += m;
+        }
+        validateAccounted(d, accounted);
+    }
+
+    static void validateAccounted(Data d, double accounted) throws IOException {
+        if (!Double.isFinite(accounted) || Math.abs(accounted - d.injected) > 1e-8 * Math.max(1, d.injected))
+            throw new IOException("Checkpoint ledger mismatch");
+    }
+
+    private static Data readV1Stream(Path path, boolean retain) throws IOException {
+        try (DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(Files.newInputStream(path)))) {
+            Data d = readGlobals(in);
+            Set<CellKey> seen = new HashSet<>();
+            int n = count(in, 25);
+            double accounted = d.escaped + d.removed;
+            for (int i = 0; i < n; i++) {
+                CellData c = readCell(in, d.dimension);
+                if (!seen.add(c.key)) throw new IOException("Duplicate cell");
+                if (c.mass != null) accounted += c.mass.total();
+                for (double mass : c.trapped.values()) accounted += mass;
+                if (retain) d.cells.add(c);
+            }
+            validateAccounted(d, accounted);
+            if (in.read() != -1) throw new IOException("Trailing checkpoint bytes");
+            return d;
+        }
+    }
+
+    private static Data decode(byte[] bytes) throws IOException {
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            Data d = readGlobals(in);
+            Set<CellKey> seen = new HashSet<>();
+            int n = count(in, 25);
+            for (int i = 0; i < n; i++) {
+                CellData c = readCell(in, d.dimension);
+                if (!seen.add(c.key)) throw new IOException("Duplicate cell");
+                d.cells.add(c);
+            }
+            validateLedger(d);
+            if (in.read() != -1) throw new IOException("Trailing checkpoint bytes");
+            return d;
+        }
+    }
+
     private static int count(DataInputStream in, int minimumBytes) throws IOException {
         int n = in.readInt();
-        if (n < 0 || n > MAX_RECORDS || n > (in.available() / Math.max(1, minimumBytes))) {
+        if (n < 0 || n > MAX_RECORDS) {
             throw new IOException("Invalid record count");
         }
         return n;
@@ -644,7 +726,7 @@ final class Checkpoint {
         }
     }
 
-    private static void config(DataOutputStream o, SmogConfig c) throws IOException {
+    static void config(DataOutputStream o, SmogConfig c) throws IOException {
         o.writeInt(c.containerSize);
         o.writeInt(c.mode);
         o.writeInt(c.radius);
@@ -701,11 +783,13 @@ final class Checkpoint {
         for (CellData saved : d.cells) {
             DimensionState.Cell c = s.cell(saved.key, true);
             c.parked = saved.mass;
+            c.checkpointRestorePending = true;
             c.trapped.putAll(saved.trapped);
             c.waiting.putAll(saved.waiting);
             c.events.putAll(saved.events);
             c.status = DimensionState.Status.RESTORE_PENDING;
             s.restoreEvents(c);
+            s.startup.saved(c);
         }
         for (DimensionState.Source source : d.sources) {
             source.stamp = s.gameTime();

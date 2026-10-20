@@ -95,7 +95,16 @@ public final class PerformanceFixTests {
             store.save(state, queue); // Periodic + WorldEvent.Save before the same cut.
             long requestNanos = System.nanoTime() - requestStart;
             check(!Files.exists(path.resolve("CURRENT")), "Request performed synchronous I/O");
-            state.geometry(100000L);
+            // Keep the COW capture deliberately larger than one tiny CPU slice.
+            // The phase assertion must not depend on JIT/OS scheduling of a 100 us call.
+            for (int i = 0; i < 4096; i++) {
+                CubeKey extra = new CubeKey(7, 10000 + i, 0, 10000);
+                state.cubes.put(extra, new DimensionState.CubeRecord(extra));
+            }
+            long captureDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            do {
+                state.geometry(100000L);
+            } while ("REQUESTED".equals(state.checkpointPhase()) && System.nanoTime() < captureDeadline);
             check("CAPTURING".equals(state.checkpointPhase()), "Expected incremental capture");
             long cutTicks = state.gameTicks();
             double cutGenerated = state.generatedMass();

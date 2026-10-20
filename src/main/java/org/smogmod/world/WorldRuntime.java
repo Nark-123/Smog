@@ -99,6 +99,7 @@ public final class WorldRuntime implements AutoCloseable {
     private long perfLogAttempts, lastPerfLogAttemptTick = Long.MIN_VALUE;
 
     public WorldRuntime(WorldServer world) throws Exception {
+        long dimensionOpened = System.nanoTime();
         this.world = world;
         provider = new ForgeWorldSnapshotProvider(world.provider.dimensionId);
         performanceFileLog = new PerformanceFileLog(
@@ -112,6 +113,12 @@ public final class WorldRuntime implements AutoCloseable {
                 .toPath()
                 .resolve("data/smog/dimension_" + world.provider.dimensionId));
         state = store.load(world.provider.dimensionId, provider, pending);
+        state.dimensionOpenedAt(dimensionOpened);
+        state.geometryCache(
+            world.getSaveHandler()
+                .getWorldDirectory()
+                .toPath()
+                .resolve("data/smog/geometry-dimension_" + world.provider.dimensionId));
         if (perfLogging) {
             long now = world.getTotalWorldTime();
             lastLogTick = now;
@@ -182,6 +189,7 @@ public final class WorldRuntime implements AutoCloseable {
             state.resumeReadyCubes();
             seeded = true;
         }
+        state.restartMetrics.set("startup_registered_columns", provider.loadedColumnCount());
         if (!changes.isEmpty()) {
             perfInvalidatedBlocks += changes.size();
             long invalidateStart = System.nanoTime();
@@ -202,12 +210,20 @@ public final class WorldRuntime implements AutoCloseable {
         long deliveryDuration = System.nanoTime() - deliveryStart;
         perfDeliveryNanos += deliveryDuration;
         perfMaxDeliveryNanos = Math.max(perfMaxDeliveryNanos, deliveryDuration);
-        state.tick(2000000L, 20, false);
+        long preGeometrySmog = System.nanoTime() - tickStart;
+        Worlds.smogUsed(this, preGeometrySmog, 0);
+        long geometryAllowance = Worlds.geometryAllowance(this);
+        state.restartMetrics.set("server_geometry_budget_ms", geometryAllowance / 1e6);
+        state.restartMetrics.set("server_previous_mspt", Worlds.previousMspt());
+        state.tick(2000000L, 20, false, geometryAllowance);
+        state.restartMetrics.set("world_snapshot_build_ms", provider.diagnostics().buildNanos / 1e6);
+        state.restartMetrics.set("memory_snapshot_bytes", provider.cachedSnapshotCount() * 8256L);
         store.pollSaveCompletion();
         if (now % 6000 == 0) {
             save();
         }
         long tickDuration = System.nanoTime() - tickStart;
+        Worlds.smogUsed(this, tickDuration - preGeometrySmog, state.lastGeometryNanos);
         perfTicks++;
         perfTickNanos += tickDuration;
         perfMaxTickNanos = Math.max(perfMaxTickNanos, tickDuration);
@@ -234,6 +250,8 @@ public final class WorldRuntime implements AutoCloseable {
     public String[] performanceLines() {
         provider.checkThread();
         GeometryMetrics m = state.geometryMetrics;
+        state.updateRestartMemoryMetrics();
+        Worlds.updateMsptMetrics(state.restartMetrics);
         ForgeWorldSnapshotProvider.Diagnostics p = provider.diagnostics();
         DimensionState.GeometryFootprint f = state.geometryFootprint();
         int[] queues = state.geometryQueues();
@@ -319,6 +337,7 @@ public final class WorldRuntime implements AutoCloseable {
                 + ms(m.refreshRequestMaxNanos)
                 + " refreshBuildMs="
                 + ms(m.refreshAdvanceNanos),
+            coldMassDiagnostics(m), state.restartMetrics.logLine(),
             "publish count/total/maxMs=" + m.publishCalls
                 + "/"
                 + ms(m.publishNanos)
@@ -465,6 +484,27 @@ public final class WorldRuntime implements AutoCloseable {
                 + state.budgetOverruns
                 + " (last three lifetime)",
             performanceLogStatus() };
+    }
+
+    // Cumulative since /smog perf reset; keep the existing safe_v1 CSV schema intact.
+    private String coldMassDiagnostics(GeometryMetrics m) {
+        return "coldMassTotals exactEnabled=" + state.coldExactMassEnabled()
+            + " coldExactCount="
+            + m.coldExactCount
+            + " coldFallbackCount="
+            + m.coldFallbackCount
+            + " coldExactMassMs="
+            + String.format(Locale.ROOT, "%.6f", m.coldExactMassMs)
+            + " coldFallbackMassMs="
+            + String.format(Locale.ROOT, "%.6f", m.coldFallbackMassMs)
+            + " epsilonDroppedMass="
+            + Double.toString(m.epsilonDroppedMass)
+            + " coldRestoredMass="
+            + Double.toString(m.coldRestoredMass)
+            + " coldPublishCount="
+            + m.coldPublishCount
+            + " replacementPublishCount="
+            + m.replacementPublishCount;
     }
 
     /** Reset only transient statistics, not work queues, snapshots, history or mass. */
@@ -764,13 +804,17 @@ public final class WorldRuntime implements AutoCloseable {
             + "/"
             + ms(freshBuildNanos)
             + "/"
-            + ms(otherNanos);
-        writePerformanceLog(message, false);
+            + ms(otherNanos)
+            + " "
+            + coldMassDiagnostics(m);
+        state.updateRestartMemoryMetrics();
+        Worlds.updateMsptMetrics(state.restartMetrics);
+        writePerformanceLog(message + " " + state.restartMetrics.logLine(), false);
         StringBuilder csv = new StringBuilder(400);
         csv.append(
             java.time.Instant.now()
                 .toString())
-            .append(",1,")
+            .append(",2,")
             .append(state.dimension)
             .append(',')
             .append(now)
@@ -864,7 +908,11 @@ public final class WorldRuntime implements AutoCloseable {
             .append(m.staleJobs - lastLogStaleJobs)
             .append(',')
             .append(String.format(Locale.ROOT, "%.3f", state.gameTime() - state.modelTime()));
-        performanceFileLog.offerCsv(PERF_CSV_HEADER, csv.toString());
+        performanceFileLog.offerCsv(
+            PERF_CSV_HEADER + "," + state.restartMetrics.csvHeader(),
+            csv.append(',')
+                .append(state.restartMetrics.csvValues())
+                .toString());
         lastLogTick = now;
         lastLogRuntimeNanos = perfTickNanos;
         lastLogGeometryNanos = m.geometryNanos;

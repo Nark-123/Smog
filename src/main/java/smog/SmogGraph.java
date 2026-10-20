@@ -69,6 +69,12 @@ public final class SmogGraph implements PartitionTarget {
 
     private int partIndex, partCount;
 
+    // Immutable solver view. The solver walks activeEdges, never mutable adjacency.
+    private int stepNodeLimit, stepActiveEdgeLimit, stepEdgeSlotLimit, stepSinkLimit;
+    private long solverEpoch;
+    private boolean appending;
+    private int appendNodeStart, appendNodeEnd, appendEdgeEnd;
+
     private boolean partCycling;
 
     // A partial step is a transaction. state is the private candidate; workState
@@ -366,11 +372,13 @@ public final class SmogGraph implements PartitionTarget {
     }
 
     void addNodeMass(int id, double amount) {
-        requireIdle();
+        requireMutableNode(id);
         state[2 * id] += amount;
+        if (partCount != 0) workState[2 * id] += amount;
     }
 
     void sparseBoundary(int id, double value) {
+        requireMutableNode(id);
         boundary[id] = value;
         refreshSink(id);
     }
@@ -758,6 +766,11 @@ public final class SmogGraph implements PartitionTarget {
         }
         if (partCount == 0) {
             ensureStepBuffers();
+            stepNodeLimit = nodeSlots;
+            stepActiveEdgeLimit = activeEdges.size;
+            stepEdgeSlotLimit = edgeSlots;
+            stepSinkLimit = sinkNodes.size;
+            solverEpoch++;
             savedInjected = injected;
             savedEscaped = escaped;
             savedBlocked = blocked;
@@ -779,20 +792,22 @@ public final class SmogGraph implements PartitionTarget {
             throw new IllegalStateException("Cannot change an unfinished step's schedule");
         }
         if (law == SmogConfig.QUADRATIC_FAST) {
-            long total = 2L * liveEdges;
+            long total = 2L * stepActiveEdgeLimit;
             long begin = total * partIndex / parts, end = total * (partIndex + 1) / parts;
-            balancedLoads((int) Math.min(begin, liveEdges), (int) Math.min(end, liveEdges));
-            balancedFluxes((int) Math.max(0, begin - liveEdges), (int) Math.max(0, end - liveEdges));
+            balancedLoads((int) Math.min(begin, stepActiveEdgeLimit), (int) Math.min(end, stepActiveEdgeLimit));
+            balancedFluxes(
+                (int) Math.max(0, begin - stepActiveEdgeLimit),
+                (int) Math.max(0, end - stepActiveEdgeLimit));
         } else {
             exchangeRange(
-                (int) ((long) edgeSlots * partIndex / parts),
-                (int) ((long) edgeSlots * (partIndex + 1) / parts));
+                (int) ((long) stepEdgeSlotLimit * partIndex / parts),
+                (int) ((long) stepEdgeSlotLimit * (partIndex + 1) / parts));
         }
         if (++partIndex != parts) {
             return false;
         }
         if (law == SmogConfig.QUADRATIC_FAST) {
-            for (int i = 0; i < nodeSlots; i++) {
+            for (int i = 0; i < stepNodeLimit; i++) {
                 state[2 * i] += delta[i];
             }
         }
@@ -827,15 +842,15 @@ public final class SmogGraph implements PartitionTarget {
     }
 
     private void ensureStepBuffers() {
-        if (workState.length != state.length) {
-            workState = new double[state.length];
+        if (workState.length < state.length) {
+            workState = Arrays.copyOf(workState, state.length);
         }
         if (nodeLoad.length < volume.length) {
-            nodeLoad = new double[volume.length];
-            delta = new double[volume.length];
+            nodeLoad = Arrays.copyOf(nodeLoad, volume.length);
+            delta = Arrays.copyOf(delta, volume.length);
         }
         if (mobility.length < coefficient.length) {
-            mobility = new double[coefficient.length];
+            mobility = Arrays.copyOf(mobility, coefficient.length);
         }
     }
 
@@ -935,7 +950,7 @@ public final class SmogGraph implements PartitionTarget {
     private void sinkHalf() {
         double total = escaped;
         if (law == SmogConfig.LINEAR) {
-            for (int i = 0; i < sinkNodes.size; i++) {
+            for (int i = 0; i < stepSinkLimit; i++) {
                 int id = sinkNodes.data[i], offset = 2 * id;
                 if (partIndex == 0) {
                     firstSinkLoss[id] = 0;
@@ -951,7 +966,7 @@ public final class SmogGraph implements PartitionTarget {
                 state[offset] = remaining;
             }
         } else {
-            for (int i = 0; i < sinkNodes.size; i++) {
+            for (int i = 0; i < stepSinkLimit; i++) {
                 int id = sinkNodes.data[i], offset = 2 * id;
                 if (partIndex == 0) {
                     firstSinkLoss[id] = 0;
@@ -1175,8 +1190,11 @@ public final class SmogGraph implements PartitionTarget {
     }
 
     public int newNode(int seedPosition) {
+        if (partCount != 0 && !appending) requireIdle();
+        if (appending && nodeSlots >= appendNodeEnd)
+            throw new IllegalStateException("Append node reservation exhausted");
         int id;
-        if (freeNodes.size != 0) {
+        if (freeNodes.size != 0 && !appending) {
             id = freeNodes.pop();
         } else {
             id = nodeSlots;
@@ -1189,6 +1207,10 @@ public final class SmogGraph implements PartitionTarget {
         sinkSlot[id] = -1;
         state[2 * id] = 0;
         state[2 * id + 1] = 0;
+        if (partCount != 0) {
+            workState[2 * id] = workState[2 * id + 1] = 0;
+            nodeLoad[id] = delta[id] = 0;
+        }
         boundary[id] = 0;
         sinkFactor[id] = 1;
         firstSinkLoss[id] = 0;
@@ -1197,13 +1219,18 @@ public final class SmogGraph implements PartitionTarget {
     }
 
     public void setVolume(int id, int value) {
+        requireMutableNode(id);
         volume[id] = value;
         state[2 * id + 1] = 1.0 / value;
+        if (partCount != 0) workState[2 * id + 1] = 1.0 / value;
     }
 
     void addEdge(int a, int b, double g) {
+        if (partCount != 0 && !appending) requireIdle();
+        if (appending && (edgeSlots >= appendEdgeEnd || (a < appendNodeStart && b < appendNodeStart)))
+            throw new IllegalStateException("Append must connect a new node within its reservation");
         int id;
-        if (freeEdges.size != 0) {
+        if (freeEdges.size != 0 && !appending) {
             id = freeEdges.pop();
         } else {
             id = edgeSlots;
@@ -1258,6 +1285,7 @@ public final class SmogGraph implements PartitionTarget {
     }
 
     void removeNode(int id) {
+        requireIdle();
         while (adjacency[id] >= 0) {
             removeEdge(adjacency[id] / 2);
         }
@@ -1309,6 +1337,7 @@ public final class SmogGraph implements PartitionTarget {
     }
 
     void refreshSink(int id) {
+        requireMutableNode(id);
         if (boundary[id] <= 0) {
             removeSink(id);
             return;
@@ -1358,6 +1387,207 @@ public final class SmogGraph implements PartitionTarget {
         if (patchWork != null) {
             patchWork.ensureNodes(capacity);
         }
+    }
+
+    /** Reserve sparse storage before an atomic restart commit; never a physics operation. */
+    int reserveSparse(int nodes, int edges) {
+        if (!appending) requireIdle();
+        int nodeRequired = Math.addExact(nodeSlots, appending ? nodes : Math.max(0, nodes - freeNodes.size));
+        int edgeRequired = Math.addExact(edgeSlots, appending ? edges : Math.max(0, edges - freeEdges.size));
+        ensureNodes(nodeRequired);
+        ensureEdges(edgeRequired);
+        int activeRequired = Math.addExact(activeEdges.size, edges);
+        if (activeEdges.data.length < activeRequired) activeEdges.data = Arrays
+            .copyOf(activeEdges.data, IntList.capacity(activeEdges.data.length, activeRequired));
+        int sinks = Math.addExact(sinkNodes.size, nodes);
+        if (sinkNodes.data.length < sinks)
+            sinkNodes.data = Arrays.copyOf(sinkNodes.data, IntList.capacity(sinkNodes.data.length, sinks));
+        ensureStepBuffers();
+        return nodeRequired;
+    }
+
+    /**
+     * One array relocation per preparation unit, before commit. Existing values are copied
+     * and the live reference is swapped immediately on the owner thread. Other arrays may
+     * temporarily have more capacity; nodeSlots/edgeSlots and the solver view never grow here.
+     * This avoids allocating/copying every graph array in one atomic publication.
+     */
+    boolean prepareAppendCapacity(int nodes, int edges) {
+        if (nx != 0 || appending) throw new IllegalStateException("Sparse preparation only");
+        int nr = Math.addExact(nodeSlots, partCount != 0 ? nodes : Math.max(0, nodes - freeNodes.size));
+        int er = Math.addExact(edgeSlots, partCount != 0 ? edges : Math.max(0, edges - freeEdges.size));
+        int nc = IntList.capacity(volume.length, nr), ec = IntList.capacity(conductance.length, er);
+        if (nc > (Integer.MAX_VALUE - 8) / 3 || ec > (Integer.MAX_VALUE - 8) / 3)
+            throw new IllegalStateException("Too many append slots");
+        // Work first: beginning another step may swap the two mass buffers meanwhile.
+        if (workState.length < nr * 2) {
+            workState = Arrays.copyOf(workState, nc * 2);
+            return false;
+        }
+        if (state.length < nr * 2) {
+            state = Arrays.copyOf(state, nc * 2);
+            return false;
+        }
+        if (nodeLoad.length < nr) {
+            nodeLoad = Arrays.copyOf(nodeLoad, nc);
+            return false;
+        }
+        if (delta.length < nr) {
+            delta = Arrays.copyOf(delta, nc);
+            return false;
+        }
+        if (seed.length < nr) {
+            seed = Arrays.copyOf(seed, nc);
+            return false;
+        }
+        if (adjacency.length < nr) {
+            int old = adjacency.length;
+            adjacency = Arrays.copyOf(adjacency, nc);
+            Arrays.fill(adjacency, old, nc, -1);
+            return false;
+        }
+        if (sinkSlot.length < nr) {
+            int old = sinkSlot.length;
+            sinkSlot = Arrays.copyOf(sinkSlot, nc);
+            Arrays.fill(sinkSlot, old, nc, -1);
+            return false;
+        }
+        if (boundary.length < nr) {
+            boundary = Arrays.copyOf(boundary, nc);
+            return false;
+        }
+        if (sinkFactor.length < nr) {
+            sinkFactor = Arrays.copyOf(sinkFactor, nc);
+            return false;
+        }
+        if (frozen.length < nr) {
+            frozen = Arrays.copyOf(frozen, nc);
+            return false;
+        }
+        if (firstSinkLoss.length < nr) {
+            firstSinkLoss = Arrays.copyOf(firstSinkLoss, nc);
+            return false;
+        }
+        if (eventAdds.length < nr) {
+            eventAdds = Arrays.copyOf(eventAdds, nc);
+            return false;
+        }
+        if (eventRemoves.length < nr) {
+            eventRemoves = Arrays.copyOf(eventRemoves, nc);
+            return false;
+        }
+        if (eventMarked.length < nr) {
+            eventMarked = Arrays.copyOf(eventMarked, nc);
+            return false;
+        }
+        if (volume.length < nr) {
+            volume = Arrays.copyOf(volume, nc);
+            return false;
+        }
+        if (mobility.length < er) {
+            mobility = Arrays.copyOf(mobility, ec);
+            return false;
+        }
+        if (endpoints.length < er * 2) {
+            endpoints = Arrays.copyOf(endpoints, ec * 2);
+            return false;
+        }
+        if (next.length < er * 2) {
+            next = Arrays.copyOf(next, ec * 2);
+            return false;
+        }
+        if (previous.length < er * 2) {
+            previous = Arrays.copyOf(previous, ec * 2);
+            return false;
+        }
+        if (edgeActiveSlot.length < er) {
+            edgeActiveSlot = Arrays.copyOf(edgeActiveSlot, ec);
+            return false;
+        }
+        if (coefficient.length < er) {
+            coefficient = Arrays.copyOf(coefficient, ec);
+            return false;
+        }
+        if (conductance.length < er) {
+            conductance = Arrays.copyOf(conductance, ec);
+            return false;
+        }
+        int ar = Math.addExact(activeEdges.size, edges), sr = Math.addExact(sinkNodes.size, nodes);
+        if (activeEdges.data.length < ar) {
+            activeEdges.data = Arrays.copyOf(activeEdges.data, IntList.capacity(activeEdges.data.length, ar));
+            return false;
+        }
+        if (sinkNodes.data.length < sr) {
+            sinkNodes.data = Arrays.copyOf(sinkNodes.data, IntList.capacity(sinkNodes.data.length, sr));
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Narrow, owner-thread append scope; reserve everything before publishing any node.
+     * Existing nodes, sources, coefficients and the active/sink prefixes stay immutable.
+     * No free IDs are reused, even on an idle boundary, within this scope.
+     */
+    int beginAppendBatch(int nodes, int edges) {
+        if (appending || nx != 0 || law != SmogConfig.QUADRATIC_FAST || nodes < 0 || edges < 0)
+            throw new IllegalStateException("Unsupported append scope");
+        appendNodeStart = nodeSlots;
+        appendNodeEnd = Math.addExact(nodeSlots, nodes);
+        appendEdgeEnd = Math.addExact(edgeSlots, edges);
+        appending = true;
+        try {
+            return reserveSparse(nodes, edges);
+        } catch (RuntimeException | Error failure) {
+            appending = false;
+            throw failure;
+        }
+    }
+
+    void endAppendBatch() {
+        appending = false;
+    }
+
+    long solverEpoch() {
+        return solverEpoch;
+    }
+
+    int pendingSolverNodes() {
+        return partCount == 0 ? 0 : nodeSlots - stepNodeLimit;
+    }
+
+    private void requireMutableNode(int id) {
+        if (appending && (id < appendNodeStart || id >= nodeSlots))
+            throw new IllegalStateException("Append cannot modify an existing node");
+        if (partCount != 0 && !appending) requireIdle();
+    }
+
+    long sparseBytes() {
+        return 4L
+            * (volume.length + seed.length
+                + adjacency.length
+                + sinkSlot.length
+                + endpoints.length
+                + next.length
+                + previous.length
+                + edgeActiveSlot.length
+                + activeEdges.data.length
+                + sinkNodes.data.length
+                + freeNodes.data.length
+                + freeEdges.data.length)
+            + 8L * (state.length + boundary.length
+                + sinkFactor.length
+                + conductance.length
+                + coefficient.length
+                + workState.length
+                + nodeLoad.length
+                + delta.length
+                + mobility.length
+                + firstSinkLoss.length
+                + eventAdds.length
+                + eventRemoves.length)
+            + frozen.length
+            + eventMarked.length;
     }
 
     private void ensureEdges(int required) {

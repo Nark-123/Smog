@@ -142,6 +142,12 @@ public final class SmogMod {
     }
 
     @SubscribeEvent
+    public void serverTick(TickEvent.ServerTickEvent event) {
+        if (event.phase == TickEvent.Phase.START) Worlds.beginServerTick();
+        else Worlds.endServerTick();
+    }
+
+    @SubscribeEvent
     public void worldTick(TickEvent.WorldTickEvent event) {
         if (!event.world.isRemote && event.phase == TickEvent.Phase.END) {
             WorldRuntime runtime = Worlds.get(event.world);

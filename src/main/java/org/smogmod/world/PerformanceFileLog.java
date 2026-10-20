@@ -53,7 +53,7 @@ final class PerformanceFileLog {
         String filename = path.getFileName()
             .toString();
         String stem = filename.endsWith(".log") ? filename.substring(0, filename.length() - 4) : filename;
-        csvPath = path.resolveSibling(stem + "_safe_v1.csv");
+        csvPath = path.resolveSibling(stem + "_epoch_v3.csv");
     }
 
     String path() {
@@ -84,7 +84,7 @@ final class PerformanceFileLog {
         return lastError.get();
     }
 
-    /** Tabular schema v1; the writer owns header creation and all filesystem access. */
+    /** A file is appended only when its exact header matches, including future schema changes. */
     boolean offerCsv(final String header, final String row) {
         try {
             WRITER.execute(new Runnable() {
@@ -94,6 +94,13 @@ final class PerformanceFileLog {
                     try {
                         Files.createDirectories(csvPath.getParent());
                         boolean writeHeader = !Files.exists(csvPath) || Files.size(csvPath) == 0;
+                        if (!writeHeader) {
+                            try (java.io.BufferedReader reader = Files
+                                .newBufferedReader(csvPath, StandardCharsets.UTF_8)) {
+                                if (!header.equals(reader.readLine()))
+                                    throw new IOException("CSV header mismatch: refusing mixed performance schemas");
+                            }
+                        }
                         String lines = (writeHeader ? header + "\n" : "") + row + "\n";
                         Files.write(
                             csvPath,

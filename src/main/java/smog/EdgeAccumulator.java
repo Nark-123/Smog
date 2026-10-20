@@ -55,6 +55,10 @@ final class EdgeAccumulator {
     }
 
     void add(int a, int b, int distance) {
+        addAggregate(a, b, 1, distance);
+    }
+
+    void addAggregate(int a, int b, int area, int distance) {
         if (a > b) {
             int t = a;
             a = b;
@@ -67,13 +71,35 @@ final class EdgeAccumulator {
         int slot = slot(key);
         if (keys[slot] == 0) {
             keys[slot] = key;
-            areas[slot] = 1;
+            areas[slot] = area;
             distances[slot] = distance;
             size++;
         } else {
-            areas[slot]++;
+            areas[slot] += area;
             distances[slot] = Math.min(distances[slot], distance);
         }
+    }
+
+    int size() {
+        return size;
+    }
+
+    /** Stable local IDs, area and minimum distance; never serialized conductance/runtime IDs. */
+    int[] records() {
+        int[] result = new int[size * 4];
+        long[] sorted = new long[size];
+        int n = 0;
+        for (long key : keys) if (key != 0) sorted[n++] = key;
+        Arrays.sort(sorted);
+        for (int i = 0; i < size; i++) {
+            long key = sorted[i];
+            int s = slot(key);
+            result[4 * i] = (int) (key >>> 32);
+            result[4 * i + 1] = (int) key;
+            result[4 * i + 2] = areas[s];
+            result[4 * i + 3] = distances[s];
+        }
+        return result;
     }
 
     void appendTo(final SmogGraph graph) {

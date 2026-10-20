@@ -6,10 +6,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -47,6 +51,7 @@ public final class WorldStore {
 
     private volatile String phase = "IDLE", error = "";
     public long requests, coalesced, completed, failed, maxServerNanos;
+    public volatile long cleanupFailures;
     public volatile long safeCutWaitNanos, queueCopyNanos, writeNanos, commitNanos, lastSuccessMillis;
 
     private volatile long writeStarted;
@@ -178,10 +183,33 @@ public final class WorldStore {
             phase = "CAPTURING";
             return new DimensionState.SaveAttachment() {
 
+                private java.nio.channels.FileChannel lease;
+                private java.nio.channels.FileLock lock;
+
                 @Override
                 public void beforeWrite() {
+                    try {
+                        Files.createDirectories(bundle);
+                        lease = java.nio.channels.FileChannel.open(
+                            bundle.resolve(".in-progress"),
+                            java.nio.file.StandardOpenOption.CREATE,
+                            java.nio.file.StandardOpenOption.WRITE);
+                        lock = lease.lock();
+                    } catch (IOException failure) {
+                        throw new java.io.UncheckedIOException(failure);
+                    }
                     phase = "WRITING";
                     writeStarted = System.nanoTime();
+                }
+
+                @Override
+                public void afterWrite() throws IOException {
+                    try {
+                        if (lock != null) lock.release();
+                    } finally {
+                        if (lease != null) lease.close();
+                    }
+                    Files.deleteIfExists(bundle.resolve(".in-progress"));
                 }
 
                 @Override
@@ -196,6 +224,13 @@ public final class WorldStore {
                         .toString();
                     commitNanos = System.nanoTime() - start;
                     lastSuccessMillis = System.currentTimeMillis();
+                    try {
+                        cleanupBundles(bundle);
+                    } catch (IOException | RuntimeException cleanupFailure) {
+                        // CURRENT is durable already. Maintenance cannot fail this save.
+                        cleanupFailures++;
+                        System.err.println("SMOG old bundle cleanup deferred: " + cleanupFailure);
+                    }
                 }
             };
         });
@@ -227,6 +262,56 @@ public final class WorldStore {
                 failure.addSuppressed(rollbackFailure);
             }
             throw failure;
+        }
+    }
+
+    /** Writer-only, after both durable pointer replacements. Never follows symlinks. */
+    private void cleanupBundles(Path committed) throws IOException {
+        Set<String> keep = new HashSet<>();
+        keep.add(
+            committed.getFileName()
+                .toString());
+        for (String pointer : new String[] { "CURRENT", "PREVIOUS" }) {
+            Path path = directory.resolve(pointer);
+            if (!Files.exists(path)) continue;
+            String name = new String(Files.readAllBytes(path), StandardCharsets.US_ASCII).trim();
+            if (!name.matches("bundle-[0-9a-f-]{36}")) throw new IOException("Invalid cleanup pointer");
+            keep.add(name);
+        }
+        try (java.nio.file.DirectoryStream<Path> bundles = Files.newDirectoryStream(directory, "bundle-*")) {
+            for (Path path : bundles) {
+                String name = path.getFileName()
+                    .toString();
+                if (!name.matches("bundle-[0-9a-f-]{36}") || keep.contains(name)
+                    || !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) continue;
+                // Incomplete writes (including another operation's temporary payloads)
+                // are deliberately left alone. Completed crash orphans can be collected.
+                if (!Files.isRegularFile(path.resolve("core/manifest"), LinkOption.NOFOLLOW_LINKS)
+                    || !Files.isRegularFile(path.resolve("pending.bin"), LinkOption.NOFOLLOW_LINKS)
+                    || !Files.isRegularFile(path.resolve("pending.sha256"), LinkOption.NOFOLLOW_LINKS)) continue;
+                Path marker = path.resolve(".in-progress");
+                if (Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+                    if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)) continue;
+                    // Process death releases the OS lock; a live writer's full payload
+                    // must be protected even before CURRENT points to it.
+                    try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel
+                        .open(marker, java.nio.file.StandardOpenOption.WRITE)) {
+                        java.nio.channels.FileLock lease;
+                        try {
+                            lease = channel.tryLock();
+                        } catch (java.nio.channels.OverlappingFileLockException activeWriter) {
+                            continue;
+                        }
+                        if (lease == null) continue;
+                        lease.release();
+                    }
+                }
+                try (java.util.stream.Stream<Path> tree = Files.walk(path)) {
+                    Path[] ordered = tree.sorted(Comparator.reverseOrder())
+                        .toArray(Path[]::new);
+                    for (Path item : ordered) Files.deleteIfExists(item);
+                }
+            }
         }
     }
 

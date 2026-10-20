@@ -46,6 +46,8 @@ final class CellBuild {
 
     boolean ready;
 
+    boolean fromCache;
+
     // Diagnostic only: subsequent contact-stage work belongs to a refresh.
     boolean diagnosticRefreshingContacts;
 
@@ -70,6 +72,40 @@ final class CellBuild {
         }
         keys = list.toArray(new CubeKey[0]);
         snapshots = new ImmutableCubeSnapshot[keys.length];
+    }
+
+    CellBuild(DimensionState state, FastRestorePlan.Entry entry) {
+        this(state, entry.cell);
+        fromCache = true;
+        GeometryPack p = entry.pack;
+        local.count = p.volumes.length;
+        for (int i = 0; i < 512; i++) {
+            local.labels[i] = p.labels.get(i);
+            local.distance[i] = (byte) p.distance.get(i);
+        }
+        System.arraycopy(p.volumes, 0, local.volumes, 0, local.count);
+        System.arraycopy(p.seeds, 0, local.seeds, 0, local.count);
+        System.arraycopy(p.boundary, 0, boundary, 0, local.count);
+        geometry.labels = p.labels;
+        geometry.distance = p.distance;
+        geometry.volumes = p.volumes.clone();
+        geometry.dependencies = keys;
+        geometry.epochs = new long[keys.length];
+        geometry.revisions = new long[keys.length];
+        for (int i = 0; i < keys.length; i++) {
+            for (int j = 0; j < p.dependencies.length; j++)
+                if (keys[i].equals(p.dependencies[j])) snapshots[i] = entry.snapshots[j];
+            geometry.epochs[i] = snapshots[i] == null ? -1 : snapshots[i].epoch;
+            geometry.revisions[i] = snapshots[i] == null ? -1 : snapshots[i].revision;
+        }
+        for (int i = 0; i < p.contacts.length; i += 4)
+            internalEdges.addAggregate(p.contacts[i], p.contacts[i + 1], p.contacts[i + 2], p.contacts[i + 3]);
+        edges.copyFrom(internalEdges);
+        for (int d = 0; d < 6; d++) {
+            DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);
+            neighbors[d] = c == null ? null : c.geometry;
+        }
+        stage = 4;
     }
 
     boolean inContacts() {
@@ -106,8 +142,8 @@ final class CellBuild {
                 break;
             case 2:
                 if (partitioner.advance(32)) {
-                    geometry.labels = local.labels;
-                    geometry.distance = local.distance;
+                    geometry.labels = VoxelLabels.of(local.labels);
+                    geometry.distance = VoxelDistance.of(local.distance);
                     geometry.volumes = Arrays.copyOf(local.volumes, local.count);
                     geometry.dependencies = keys;
                     geometry.epochs = new long[keys.length];
@@ -159,9 +195,9 @@ final class CellBuild {
                     if (g == null) {
                         continue;
                     }
-                    int p = face(face, cursor), q = face(face ^ 1, cursor), a = local.labels[p], b = g.labels[q];
+                    int p = face(face, cursor), q = face(face ^ 1, cursor), a = local.labels[p], b = g.labels.get(q);
                     if (a >= 0 && b >= 0) {
-                        edges.add(a, 512 + g.ids[b], (local.distance[p] & 255) + (g.distance[q] & 255) + 1);
+                        edges.add(a, 512 + g.ids[b], (local.distance[p] & 255) + g.distance.get(q) + 1);
                     }
                 }
                 if (cursor == 64) {
@@ -191,6 +227,10 @@ final class CellBuild {
             }
         }
         return null;
+    }
+
+    GeometryPack pack() {
+        return new GeometryPack(cell.key, geometry, local.seeds, boundary, internalEdges.records(), snapshots);
     }
 
     boolean validWorld() {

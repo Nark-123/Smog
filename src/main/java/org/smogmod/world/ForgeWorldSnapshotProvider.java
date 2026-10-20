@@ -1,6 +1,8 @@
 package org.smogmod.world;
 
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import net.minecraft.block.Block;
@@ -45,6 +47,9 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     private final Map<Long, Column> columns = new HashMap<>();
 
     private int cachedSnapshots;
+    private final int snapshotLimit = Math
+        .max(16, Math.min(32768, Integer.getInteger("smog.snapshotCacheSections", 2048)));
+    private final LinkedHashMap<CubeKey, ImmutableCubeSnapshot> snapshotLru = new LinkedHashMap<>(16, .75f, true);
 
     /** Owner-thread-only diagnostic counters; no persistent data or per-block timers. */
     private final Diagnostics diagnostics = new Diagnostics();
@@ -193,6 +198,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     private void expireSection(Column column, int section) {
         column.revisions[section]++;
         if (column.snapshots[section] != null) {
+            snapshotLru.remove(column.snapshots[section].key);
             column.snapshots[section] = null;
             cachedSnapshots--;
             diagnostics.evictedSnapshots++;
@@ -202,6 +208,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
     private void dropSnapshots(Column column) {
         for (int section = 0; section < SECTION_COUNT; section++) {
             if (column.snapshots[section] != null) {
+                snapshotLru.remove(column.snapshots[section].key);
                 column.snapshots[section] = null;
                 cachedSnapshots--;
                 diagnostics.evictedSnapshots++;
@@ -251,6 +258,7 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
         }
         ImmutableCubeSnapshot cached = column.snapshots[cube.y];
         if (cached != null) {
+            snapshotLru.get(cube);
             diagnostics.hits++;
             return cached;
         }
@@ -287,6 +295,20 @@ public final class ForgeWorldSnapshotProvider implements WorldSnapshotProvider {
             cached = new ImmutableCubeSnapshot(cube, column.epoch, column.revisions[cube.y], air, atmosphere);
             column.snapshots[cube.y] = cached;
             cachedSnapshots++;
+            snapshotLru.put(cube, cached);
+            while (snapshotLru.size() > snapshotLimit) {
+                Iterator<Map.Entry<CubeKey, ImmutableCubeSnapshot>> it = snapshotLru.entrySet()
+                    .iterator();
+                Map.Entry<CubeKey, ImmutableCubeSnapshot> e = it.next();
+                CubeKey key = e.getKey();
+                Column old = columns.get(key(key.x, key.z));
+                if (old != null && old.snapshots[key.y] == e.getValue()) {
+                    old.snapshots[key.y] = null;
+                    cachedSnapshots--;
+                    diagnostics.evictedSnapshots++;
+                }
+                it.remove();
+            }
             return cached;
         } catch (RuntimeException error) {
             diagnostics.buildFailures++;

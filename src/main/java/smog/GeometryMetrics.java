@@ -79,6 +79,11 @@ public final class GeometryMetrics {
     public long captureCalls, captureNanos, captureMaxNanos;
     public long publishCalls, publishNanos, publishMaxNanos;
 
+    // Session/perf-reset diagnostics only. Epsilon removals also enter state.removed,
+    // whose checkpoint field persists the ledger without a format change.
+    public long coldExactCount, coldFallbackCount, coldPublishCount, replacementPublishCount;
+    public double coldExactMassMs, coldFallbackMassMs, epsilonDroppedMass, coldRestoredMass;
+
     // Per-geometry-call exit reasons. Each counter is independent; blocked reasons may overlap.
     public long budgetEndCalls, idleEndCalls, idleWithBacklogCalls;
     public long waitSolverCalls, waitCaptureCalls, preparedFullCalls;
@@ -203,16 +208,20 @@ public final class GeometryMetrics {
     }
 
     void publish(long nanos) {
-        safeWindowPublishTotal++;
+        publishBatch(nanos, 1);
+    }
+
+    void publishBatch(long nanos, int cells) {
+        safeWindowPublishTotal += cells;
         if (safeWindowOpen) {
-            safeWindowCurrentPublished++;
+            safeWindowCurrentPublished += cells;
             safeWindowMaxPublished = Math.max(safeWindowMaxPublished, safeWindowCurrentPublished);
         }
-        publishCalls++;
+        publishCalls += cells;
         publishNanos += nanos;
         if (recordingSafeCall) {
             safeTotals[SAFE_PUBLISH_NANOS] += nanos;
-            safeTotals[SAFE_PUBLISHED]++;
+            safeTotals[SAFE_PUBLISHED] += cells;
         }
         publishMaxNanos = Math.max(publishMaxNanos, nanos);
     }
@@ -229,6 +238,8 @@ public final class GeometryMetrics {
         cellsPrepared = partitionsCompleted = partitionNodes = maxPartitionNodes = 0;
         captureCalls = captureNanos = captureMaxNanos = 0;
         publishCalls = publishNanos = publishMaxNanos = 0;
+        coldExactCount = coldFallbackCount = coldPublishCount = replacementPublishCount = 0;
+        coldExactMassMs = coldFallbackMassMs = epsilonDroppedMass = coldRestoredMass = 0;
         budgetEndCalls = idleEndCalls = idleWithBacklogCalls = 0;
         waitSolverCalls = waitCaptureCalls = preparedFullCalls = 0;
         partCalls = partCommits = partsSkippedForCapture = 0;

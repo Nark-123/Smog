@@ -109,7 +109,7 @@ public final class SpatialQueries {
                 if (cell.geometry != null) {
                     boolean[] seen = new boolean[cell.geometry.ids.length];
                     for (int voxel = 0; voxel < 512; voxel++) {
-                        int label = cell.geometry.labels[voxel];
+                        int label = cell.geometry.labels.get(voxel);
                         if (label < 0 || seen[label]) {
                             continue;
                         }
@@ -127,7 +127,7 @@ public final class SpatialQueries {
                         masses[i] -= removed;
                         state.removed += removed;
                     }
-                    cell.parked = new DimensionState.MassRecord(old.labels, old.volumes, masses);
+                    cell.parked = old.withMasses(masses);
                 }
                 for (java.util.Map.Entry<Integer, Double> entry : cell.trapped.entrySet()) {
                     double removed = entry.getValue() * fraction;
