@@ -19,5 +19,3 @@ tasks.register('smogIntegrationTest', Exec) {
 if (project.hasProperty('smogGameSmoke')) {
     tasks.named('runServer').configure { jvmArgs '-Dsmog.gameSmoke=true' }
 }
-
-spotless { java { target 'src/*/java/**/*.java'; targetExclude '**/.*/**', '**/com/myname/**' } }

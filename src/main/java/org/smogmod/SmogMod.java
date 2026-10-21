@@ -21,6 +21,7 @@ import cpw.mods.fml.common.event.FMLServerStartingEvent;
 import cpw.mods.fml.common.event.FMLServerStoppingEvent;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
+import cpw.mods.fml.common.versioning.ComparableVersion;
 import gregtech.GTMod;
 
 @Mod(
@@ -46,8 +47,8 @@ public final class SmogMod {
             .getIndexedModList()
             .get("gregtech_nh")
             .getVersion();
-        if (!"5.09.51.482".equals(version)) {
-            throw new IllegalStateException("SMOG requires GT5U 5.09.51.482, found " + version);
+        if (new ComparableVersion(version).compareTo(new ComparableVersion("5.09.51.482")) < 0) {
+            throw new IllegalStateException("SMOG requires GT5U >= 5.09.51.482, found " + version);
         }
         if (Loader.isModLoaded("cubicchunks") || Loader.isModLoaded("CubicChunks")) {
             throw new IllegalStateException("SMOG Cubic Chunks game adapter is not implemented");

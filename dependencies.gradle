@@ -1,22 +1,3 @@
 dependencies {
-    // Compile against the exact target API without importing an entire optional modpack graph.
-    // The GT5U POM's optional Thaumic Exploration chain includes an unpublished CCL 1.3.0.
-    implementation("com.github.GTNewHorizons:GT5-Unofficial:5.09.51.482:dev") {
-        transitive = false
-    }
-    // API types referenced by GT classes used by SMOG; versions come from that exact GT5U POM.
-    compileOnly("com.github.GTNewHorizons:StructureLib:1.4.23:dev") { transitive = false }
-    compileOnly("com.github.GTNewHorizons:GTNHLib:0.7.10:dev") { transitive = false }
-    compileOnly("com.github.GTNewHorizons:ModularUI:1.2.20:dev") { transitive = false }
-    compileOnly("com.github.GTNewHorizons:ModularUI2:2.2.20-1.7.10:dev") { transitive = false }
-    compileOnly("net.industrial-craft:industrialcraft-2:2.2.828-experimental:dev") { transitive = false }
-    compileOnly("com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-702-GTNH:dev") {
-        transitive = false
-    }
-}
-
-// Match the declared GTNHLib API and the supplied pack's UniMixins, without changing mixin code.
-configurations.configureEach {
-    resolutionStrategy.force 'com.github.GTNewHorizons:GTNHLib:0.7.10'
-    resolutionStrategy.force 'io.github.legacymoddingmc:unimixins:0.1.23'
+    api("com.github.GTNewHorizons:GT5-Unofficial:5.09.54.205:dev") { transitive = true }
 }
