@@ -17,6 +17,7 @@ final class CellBuild {
     final DimensionState.Cell cell;
 
     final long ticket;
+    final boolean replacement;
 
     final Local local;
 
@@ -33,10 +34,11 @@ final class CellBuild {
 
     private final ImmutableCubeSnapshot[] snapshots;
 
-    private final DimensionState.Geometry[] neighbors = new DimensionState.Geometry[6];
+    final NeighborView neighborView;
+    private final DimensionState.Geometry[] neighbors;
+    EpochBuildAppend epochAppend;
+    long solverWaitStarted;
 
-    // Captured by validContacts on the owner thread; reused by refreshContacts.
-    private final DimensionState.Geometry[] checkedNeighbors = new DimensionState.Geometry[6];
 
     private final Partitioner partitioner;
 
@@ -44,6 +46,7 @@ final class CellBuild {
 
     private int stage, cursor, face;
 
+    int diagnosticUnits;
     boolean ready;
 
     boolean fromCache;
@@ -54,7 +57,10 @@ final class CellBuild {
     CellBuild(DimensionState state, DimensionState.Cell cell) {
         this.state = state;
         this.cell = cell;
+        neighborView = new NeighborView(state, cell.key);
+        neighbors = neighborView.geometry;
         ticket = cell.ticket;
+        replacement = cell.geometry != null;
         origin = cell.key.block(0);
         local = new Local(state.config, state.haloWorkspace);
         partitioner = state.partitionWorkspace(local);
@@ -101,10 +107,7 @@ final class CellBuild {
         for (int i = 0; i < p.contacts.length; i += 4)
             internalEdges.addAggregate(p.contacts[i], p.contacts[i + 1], p.contacts[i + 2], p.contacts[i + 3]);
         edges.copyFrom(internalEdges);
-        for (int d = 0; d < 6; d++) {
-            DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);
-            neighbors[d] = c == null ? null : c.geometry;
-        }
+        neighborView.capture();
         stage = 4;
     }
 
@@ -118,6 +121,9 @@ final class CellBuild {
     }
 
     void advance() {
+        diagnosticUnits = stage == 0 ? (cursor < keys.length ? 1 : 0)
+            : stage == 1 ? Math.min(32, 1728 - cursor) : stage == 3 ? Math.min(32, 512 - cursor)
+            : stage == 4 ? Math.min(16, 64 - cursor) : 0;
         switch (stage) {
             case 0:
                 if (cursor < keys.length) {
@@ -141,7 +147,9 @@ final class CellBuild {
                 }
                 break;
             case 2:
-                if (partitioner.advance(32)) {
+                boolean partitionDone = partitioner.advance(32);
+                diagnosticUnits = partitioner.lastUnits;
+                if (partitionDone) {
                     geometry.labels = VoxelLabels.of(local.labels);
                     geometry.distance = VoxelDistance.of(local.distance);
                     geometry.volumes = Arrays.copyOf(local.volumes, local.count);
@@ -152,10 +160,7 @@ final class CellBuild {
                         geometry.epochs[i] = snapshots[i] == null ? -1 : snapshots[i].epoch;
                         geometry.revisions[i] = snapshots[i] == null ? -1 : snapshots[i].revision;
                     }
-                    for (int d = 0; d < 6; d++) {
-                        DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);
-                        neighbors[d] = c == null ? null : c.geometry;
-                    }
+                    neighborView.capture();
                     cursor = 0;
                     stage = 3;
                 }
@@ -230,7 +235,14 @@ final class CellBuild {
     }
 
     GeometryPack pack() {
-        return new GeometryPack(cell.key, geometry, local.seeds, boundary, internalEdges.records(), snapshots);
+        long profileStart = state.profile.begin(ProfilerCounters.PACK);
+        boolean profileFailed = false;
+        try {
+            return new GeometryPack(cell.key, geometry, local.seeds, boundary, internalEdges.records(), snapshots);
+
+        } catch (RuntimeException | Error failure) {
+            profileFailed = true; state.profile.failure(ProfilerCounters.PACK); throw failure;
+        } finally { state.profile.end(ProfilerCounters.PACK, profileStart, profileFailed ? 0 : geometry.volumes.length); }
     }
 
     boolean validWorld() {
@@ -249,13 +261,7 @@ final class CellBuild {
 
     boolean validContacts() {
         boolean valid = true;
-        for (int d = 0; d < 6; d++) {
-            DimensionState.Cell c = state.cell(neighbor(cell.key, d), false);
-            checkedNeighbors[d] = c == null ? null : c.geometry;
-            if (checkedNeighbors[d] != neighbors[d]) {
-                valid = false;
-            }
-        }
+        for (int d = 0; d < 6; d++) if (neighborView.changed(d)) valid = false;
         return valid;
     }
 
@@ -268,7 +274,7 @@ final class CellBuild {
         ready = false;
         // validContacts just read all six neighbours on the same owner thread.
         // A second lookup here would duplicate the work, without improving safety.
-        System.arraycopy(checkedNeighbors, 0, neighbors, 0, neighbors.length);
+        neighborView.capture();
     }
 
     private ImmutableCubeSnapshot at(int x, int y, int z) {

@@ -10,6 +10,7 @@ import org.smogmod.world.WorldRuntime;
 import org.smogmod.world.Worlds;
 
 import smog.BlockPos;
+import smog.ProfilerCounters;
 
 public final class SmogCommand extends CommandBase {
 
@@ -21,7 +22,7 @@ public final class SmogCommand extends CommandBase {
     @Override
     public String getCommandUsage(ICommandSender sender) {
         return "/smog status|sample x y z|pulse x y z amount|remove x y z amount|source x y z"
-            + " rate|invalidate x1 y1 z1 x2 y2 z2|save|perf [reset|log on|log off|log test]";
+            + " rate|invalidate x1 y1 z1 x2 y2 z2|save|profile OFF|BASIC|SAMPLED|DIAGNOSTIC|perf [reset|log on|log off|log test]";
     }
 
     @Override
@@ -32,6 +33,16 @@ public final class SmogCommand extends CommandBase {
     @Override
     public void processCommand(ICommandSender sender, String[] args) {
         WorldRuntime runtime = Worlds.get(sender.getEntityWorld());
+        if (args.length == 2 && "profile".equals(args[0])) {
+            String level = args[1].toUpperCase(java.util.Locale.ROOT);
+            if (!level.equals("OFF") && !level.equals("BASIC") && !level.equals("SAMPLED") && !level.equals("DIAGNOSTIC"))
+                throw new WrongUsageException(getCommandUsage(sender));
+            runtime.state.profile.flush(runtime.world.getTotalWorldTime(), System.nanoTime(), true);
+            runtime.state.profile.level(ProfilerCounters.parseLevel(level));
+            sender.addChatMessage(new ChatComponentText("SMOG profile=" + level
+                + " sampleRate=" + runtime.state.profile.sampleRate() + " diagnosticLimit<=400 ticks"));
+            return;
+        }
         if (args.length >= 1 && "perf".equals(args[0])) {
             if (args.length == 1) {
                 for (String line : runtime.performanceLines()) {

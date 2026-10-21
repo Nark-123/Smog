@@ -38,12 +38,7 @@ public final class DimensionState implements AutoCloseable {
         RESTORE_PENDING
     }
 
-    public enum GeometryState {
-        UNVERIFIED,
-        VALIDATED,
-        DIRTY,
-        INVALID
-    }
+    public enum GeometryState { UNVERIFIED, VALIDATED, DIRTY, INVALID }
 
     public final int dimension;
 
@@ -59,6 +54,9 @@ public final class DimensionState implements AutoCloseable {
 
     final ArrayDeque<Frame> frames = new ArrayDeque<>();
 
+    // Absolute completed-step ordinals. Only immutable nonzero frame contributions are indexed.
+    private final Map<CellKey, Long> lastPendingContribution = new HashMap<>();
+
     final LinkedHashMap<BlockPos, Double> openAccepted = new LinkedHashMap<>();
 
     double openRejected, injected, rejected, removed;
@@ -69,6 +67,7 @@ public final class DimensionState implements AutoCloseable {
 
     private final ArrayDeque<Cell> builds = new ArrayDeque<>(), fronts = new ArrayDeque<>();
     private final ArrayDeque<Cell> criticalBuilds = new ArrayDeque<>();
+    private final ArrayDeque<Cell> replacementBuilds = new ArrayDeque<>();
 
     private final LinkedHashSet<Cell> eventCells = new LinkedHashSet<>();
 
@@ -88,6 +87,8 @@ public final class DimensionState implements AutoCloseable {
     private static final int PUBLICATION_EPSILON = 1, PUBLICATION_COLD = 2;
 
     private final ArrayDeque<CellBuild> prepared = new ArrayDeque<>();
+    private final ArrayDeque<CellBuild> appendPrepared = new ArrayDeque<>();
+    private final long runtimeOpenedNanos = System.nanoTime();
 
     // Restart-only diagnostic knob. Default 64 preserves the PerformanceFix scheduler.
     private static final int PREPARED_LIMIT = Math.max(8, Math.min(1024, Integer.getInteger("smog.preparedLimit", 64)));
@@ -118,6 +119,12 @@ public final class DimensionState implements AutoCloseable {
 
     /** Runtime-only phase timings; reset does not affect the graph, scheduling or saves. */
     public final GeometryMetrics geometryMetrics = new GeometryMetrics();
+    public final ProfilerCounters profile;
+    private final ProfilerCounters checkpointProfile;
+    public long lastTickNanos;
+    public int lastGeometryReason;
+    public long lastGeometryBlockingMask;
+    public boolean profileExternalRecorder;
 
     public final RestartMetrics restartMetrics = new RestartMetrics();
     final RestartOptions restartOptions = new RestartOptions();
@@ -129,10 +136,17 @@ public final class DimensionState implements AutoCloseable {
     private final LinkedHashSet<Cell> pendingPublicationMass = new LinkedHashSet<>();
     private Throwable appendFailure;
     private int geometryUnits;
+    private long fallbackPrepareNanos;
+    private boolean replacementQueueSelected;
 
     private Checkpoint.Capture capture;
 
     private long cellSequence;
+
+    /** Called only by the checkpoint attachment on its existing I/O worker. */
+    public void profileCheckpointCommit(long nanos) {
+        checkpointProfile.record(ProfilerCounters.CHECKPOINT_COMMIT, nanos, 1);
+    }
 
     /** Both callbacks run on the world thread; attachments run on the I/O thread only. */
     public interface SaveParticipant {
@@ -233,12 +247,12 @@ public final class DimensionState implements AutoCloseable {
 
         long ticket;
 
-        boolean queued, front, building, criticalQueued;
+        boolean queued, front, building, criticalQueued, queuedReplacement;
 
         long created;
 
         // Transient queue timestamps in simulation ticks, never serialized.
-        long diagnosticQueuedTick = -1, diagnosticPreparedTick = -1;
+        long diagnosticQueuedTick = -1, diagnosticPreparedTick = -1, diagnosticPreparedNanos;
 
         int frontierFaces;
         int pendingMassPolicy;
@@ -288,8 +302,8 @@ public final class DimensionState implements AutoCloseable {
 
         MassRecord(VoxelLabels labels, int[] volumes, double[] masses) {
             int first = labels.get(0);
-            boolean same = true;
-            for (int p = 1; p < 512 && same; p++) same = labels.get(p) == first;
+            boolean same = labels.isUniform();
+            if (!same) { same = true; for (int p = 1; p < 512 && same; p++) same = labels.get(p) == first; }
             uniform = (short) first;
             membership = same ? null : new short[512];
             if (!same) for (int p = 0; p < 512; p++) membership[p] = (short) labels.get(p);
@@ -320,6 +334,7 @@ public final class DimensionState implements AutoCloseable {
         }
 
         boolean sameLabels(VoxelLabels labels) {
+            if (membership == null && labels.isUniform()) return uniform == labels.get(0);
             for (int p = 0; p < 512; p++) if (labelAt(p) != labels.get(p)) return false;
             return true;
         }
@@ -414,14 +429,15 @@ public final class DimensionState implements AutoCloseable {
         }
 
         /** Built once per immutable frame, never from mutable Source.node bindings. */
-        boolean contributesTo(CellKey key) {
-            if (positions.length == 0) return false;
+        boolean contributesTo(CellKey key) { return contributionCells().contains(key); }
+
+        Set<CellKey> contributionCells() {
             if (contributionCells == null) {
                 contributionCells = new HashSet<>();
                 for (int i = 0; i < positions.length; i++)
                     if (amounts[i] != 0) contributionCells.add(positions[i].cell());
             }
-            return contributionCells.contains(key);
+            return contributionCells;
         }
     }
 
@@ -430,15 +446,23 @@ public final class DimensionState implements AutoCloseable {
             throw new IllegalArgumentException("Sparse lifecycle requires Cell8, phase=0, QUADRATIC_FAST");
         }
         this.dimension = dimension;
+        profile = new ProfilerCounters(dimension);
+        checkpointProfile = profile.worker(2);
+        geometryMetrics.profile = profile;
         this.config = config;
         this.provider = Objects.requireNonNull(provider, "provider");
         graph = new SmogGraph(config);
+        if (restartOptions.epochAppend) System.out.println("SMOG restore settings dimension=" + dimension
+            + " epochAppend=" + restartOptions.epochAppend + " regions=" + restartOptions.epochRegions
+            + " regionCells=" + restartOptions.regionCells + " microCells=" + restartOptions.microCells
+            + " maxNodes=" + restartOptions.batchNodes + " maxEdges=" + restartOptions.batchEdges
+            + " regionNodes=" + restartOptions.regionNodes + " regionEdges=" + restartOptions.regionEdges
+            + " preparedCubes=" + restartOptions.preparedCubes);
     }
 
     private void check(int d) {
-        if (appendFailure != null) throw new IllegalStateException(
-            "SMOG dimension " + dimension + " stopped after failed epoch append; refusing simulation/checkpoint",
-            appendFailure);
+        if (appendFailure != null) throw new IllegalStateException("SMOG dimension " + dimension
+            + " stopped after failed epoch append; refusing simulation/checkpoint", appendFailure);
         if (d != dimension) {
             throw new IllegalArgumentException("Wrong dimension");
         }
@@ -468,14 +492,21 @@ public final class DimensionState implements AutoCloseable {
     }
 
     ImmutableCubeSnapshot snapshot(CubeKey key) {
-        if (!provider.isReady(key)) {
-            return null;
-        }
-        ImmutableCubeSnapshot s = provider.snapshotIfReady(key);
-        if (s != null && !s.key.equals(key)) {
-            throw new IllegalStateException("Provider returned wrong cube");
-        }
-        return s;
+        long profileStart = profile.begin(ProfilerCounters.SNAPSHOT);
+        boolean profileFailed = false;
+        try {
+            if (!provider.isReady(key)) {
+                return null;
+            }
+            ImmutableCubeSnapshot s = provider.snapshotIfReady(key);
+            if (s != null && !s.key.equals(key)) {
+                throw new IllegalStateException("Provider returned wrong cube");
+            }
+            return s;
+
+        } catch (RuntimeException | Error failure) {
+            profileFailed = true; profile.failure(ProfilerCounters.SNAPSHOT); throw failure;
+        } finally { profile.end(ProfilerCounters.SNAPSHOT, profileStart, profileFailed ? 0 : 1); }
     }
 
     public Status status(CellKey key) {
@@ -501,19 +532,19 @@ public final class DimensionState implements AutoCloseable {
             return;
         }
         if (c.checkpointRestorePending && c.cube.readySavedMask != c.cube.savedMask) startup.ready(c.cube, true);
-        if (epochRestoreEnabled() && !c.checkpointRestorePending
-            && !c.reloadCacheEligible
-            && !c.criticalQueued
+        if (epochRestoreEnabled() && !c.checkpointRestorePending && !c.reloadCacheEligible && !c.criticalQueued
             && (c.geometry != null || c.sourceHead != null || !c.events.isEmpty() || !c.waiting.isEmpty())) {
             c.criticalQueued = true;
             criticalBuilds.addLast(c);
         }
-        if (!c.queued) {
+        boolean replacementQueue = epochRestoreEnabled() && c.geometry != null;
+        if (!c.queued || c.queuedReplacement != replacementQueue) {
             if (c.diagnosticQueuedTick < 0) {
                 c.diagnosticQueuedTick = ticks;
             }
-            c.queued = true;
-            if (c.checkpointRestorePending) builds.addFirst(c);
+            c.queued = true; c.queuedReplacement = replacementQueue;
+            if (replacementQueue) replacementBuilds.addLast(c);
+            else if (c.checkpointRestorePending) builds.addFirst(c);
             else builds.addLast(c);
         }
         c.status = c.geometry == null ? Status.QUEUED : Status.DIRTY;
@@ -529,9 +560,7 @@ public final class DimensionState implements AutoCloseable {
         enqueue(c);
     }
 
-    void validationDirty(Cell c) {
-        dirty(c);
-    }
+    void validationDirty(Cell c) { dirty(c); }
 
     public GeometryState geometryState(CellKey key) {
         check(key.dimension);
@@ -609,6 +638,7 @@ public final class DimensionState implements AutoCloseable {
     }
 
     private void notifyHalo(CubeKey key, long epoch, long revision, boolean ready, boolean edited) {
+        validator.invalidate(key);
         for (int z = key.z * 2 - 1; z <= key.z * 2 + 2; z++) {
             for (int y = key.y * 2 - 1; y <= key.y * 2 + 2; y++) {
                 for (int x = key.x * 2 - 1; x <= key.x * 2 + 2; x++) {
@@ -629,10 +659,9 @@ public final class DimensionState implements AutoCloseable {
                                 // Index discovery has no current revision. A dependency that
                                 // was already checked ready must not be dirtied by discovery.
                                 if (g.epochs[i] < 0) dirty(c);
-                            } else
-                                if (g.epochs[i] != (ready ? epoch : -1) || g.revisions[i] != (ready ? revision : -1)) {
-                                    dirty(c);
-                                }
+                            } else if (g.epochs[i] != (ready ? epoch : -1) || g.revisions[i] != (ready ? revision : -1)) {
+                                dirty(c);
+                            }
                             break;
                         }
                     }
@@ -690,6 +719,10 @@ public final class DimensionState implements AutoCloseable {
                             graph.removeNode(id);
                         }
                         c.geometry = null;
+                        // Dormant accounting lives in parked + pendingMassPolicy + frames/events.
+                        // checkpointTracking preserves diagnostic progress. Reactivation merges all
+                        // contributions before epsilon; checkpoint reload applies the cold policy.
+                        pendingPublicationMass.remove(c);
                         rebindSources(c);
                         generation++;
                     }
@@ -969,13 +1002,14 @@ public final class DimensionState implements AutoCloseable {
                 }
                 source.stamp = end;
             }
-            frames.addLast(new Frame(positions, amounts, openRejected, handles));
+            addFrame(new Frame(positions, amounts, openRejected, handles));
             openAccepted.clear();
             openRejected = 0;
             windowTick = 0;
             emissionWindows++;
         }
         lastSourceNanos = System.nanoTime() - start;
+        profile.record(ProfilerCounters.EMISSIONS, lastSourceNanos, 1);
     }
 
     public boolean tick(long geometryCpuBudgetNanos) {
@@ -997,11 +1031,15 @@ public final class DimensionState implements AutoCloseable {
         }
         scheduleParts = parts;
         scheduleCycling = cycling;
+        long profileTickStart = profile.level() == ProfilerCounters.OFF ? 0 : System.nanoTime();
+        long profileCpuStart = profileExternalRecorder ? -1 : profile.beginTickCpu();
+        long profilePublishedBefore = publications;
         boolean hadFrame = !frames.isEmpty();
         emissions(parts, cycling);
         long normalBudget = restoreWorkReady() ? Math.max(budget, restartOptions.restoreBudget) : budget;
         if (frames.size() > 1) normalBudget = budget;
         long effectiveBudget = Math.min(geometryCap, normalBudget);
+        restartMetrics.add("geometry_grant_ms", effectiveBudget / 1e6);
         geometry(effectiveBudget);
         if (geometryCache != null) geometryCache.syncMetrics(restartMetrics);
         long start = System.nanoTime();
@@ -1027,14 +1065,23 @@ public final class DimensionState implements AutoCloseable {
             geometryMetrics.partsSkippedForCapture++;
         }
         lastLawNanos = System.nanoTime() - start - postGeometry;
+        profile.record(ProfilerCounters.LAW4, lastLawNanos, 1);
         restartMetrics.set("solver_pending_frames", frames.size());
-        restartMetrics
-            .set("solver_oldest_frame_ticks", frames.isEmpty() ? 0 : Math.max(0, ticks - (steps + 1) * parts));
+        restartMetrics.set("solver_oldest_frame_ticks", frames.isEmpty() ? 0 : Math.max(0, ticks - (steps + 1) * parts));
         if (graph.isStepInProgress() || capture != null) {
             geometryMetrics.safeWindow(false);
         }
         if (autoSavePath != null && ticks % autoSaveTicks == 0 && (saveFuture == null || saveFuture.isDone())) {
             requestSave(autoSavePath);
+        }
+        if (profileTickStart != 0) {
+            if (!profileExternalRecorder) profile.endTickCpu(profileCpuStart);
+            long profileNow = System.nanoTime();
+            lastTickNanos = profileNow - profileTickStart;
+            profile.record(ProfilerCounters.DIMENSION_TICK, lastTickNanos, 1);
+            if (!profileExternalRecorder) profile.tick(ticks, profileNow, lastTickNanos, 0, lastTickNanos,
+                lastGeometryNanos, lastLawNanos, 0, effectiveBudget, publications - profilePublishedBefore,
+                preparedCount(), frames.size(), lastGeometryReason, lastGeometryBlockingMask);
         }
         return commit;
     }
@@ -1090,9 +1137,14 @@ public final class DimensionState implements AutoCloseable {
             }
         }
         rejected += candidate.rejected;
-        frames.removeFirst();
+        Frame completed = frames.removeFirst();
         candidate = null;
         steps++;
+        for (CellKey key : completed.contributionCells()) {
+            Long ordinal = lastPendingContribution.get(key);
+            if (ordinal != null && ordinal.longValue() == steps) lastPendingContribution.remove(key);
+        }
+        if (frames.isEmpty()) lastPendingContribution.clear();
         if (watchedNodes != 0) {
             changed.clear();
             graph.sparseChanges(changed, frontWatch);
@@ -1133,43 +1185,52 @@ public final class DimensionState implements AutoCloseable {
     }
 
     void applyEvents() {
-        if (graph.isStepInProgress() || capture != null) {
-            return;
-        }
-        Iterator<Cell> it = eventCells.iterator();
-        while (it.hasNext()) {
-            Cell c = it.next();
-            if (c.geometry == null) {
-                continue;
+        long profileStart = profile.begin(ProfilerCounters.EVENTS);
+        boolean profileFailed = false;
+        int profileEventUnits = 0;
+        try {
+            if (graph.isStepInProgress() || capture != null) {
+                return;
             }
-            for (Map.Entry<Integer, Double> e : c.waiting.entrySet()) {
-                deliver(c, e.getKey(), e.getValue());
+            Iterator<Cell> it = eventCells.iterator();
+            while (it.hasNext()) {
+                Cell c = it.next();
+                if (c.geometry == null) {
+                    continue;
+                }
+                profileEventUnits += c.waiting.size() + c.events.size();
+                for (Map.Entry<Integer, Double> e : c.waiting.entrySet()) {
+                    deliver(c, e.getKey(), e.getValue());
+                }
+                c.waiting.clear();
+                for (Map.Entry<Integer, Event> e : c.events.entrySet()) {
+                    int p = e.getKey();
+                    deliver(c, p, e.getValue().add);
+                    int local = c.geometry.labels.get(p);
+                    if (local >= 0) {
+                        int id = c.geometry.ids[local];
+                        double take = Math.min(graph.nodeMass(id), e.getValue().remove);
+                        graph.addNodeMass(id, -take);
+                        removed += take;
+                    }
+                }
+                c.events.clear();
+                it.remove();
+                front(c);
             }
-            c.waiting.clear();
-            for (Map.Entry<Integer, Event> e : c.events.entrySet()) {
-                int p = e.getKey();
-                deliver(c, p, e.getValue().add);
-                int local = c.geometry.labels.get(p);
-                if (local >= 0) {
-                    int id = c.geometry.ids[local];
-                    double take = Math.min(graph.nodeMass(id), e.getValue().remove);
-                    graph.addNodeMass(id, -take);
-                    removed += take;
+            for (Iterator<Cell> pending = pendingPublicationMass.iterator(); pending.hasNext();) {
+                Cell c = pending.next();
+                if (c.geometry != null && steps >= c.publicationMassAfter) {
+                    int policy = c.pendingMassPolicy;
+                    c.pendingMassPolicy = 0;
+                    pending.remove();
+                    finishPublicationMass(c, policy);
                 }
             }
-            c.events.clear();
-            it.remove();
-            front(c);
-        }
-        for (Iterator<Cell> pending = pendingPublicationMass.iterator(); pending.hasNext();) {
-            Cell c = pending.next();
-            if (c.geometry != null && steps >= c.publicationMassAfter) {
-                int policy = c.pendingMassPolicy;
-                c.pendingMassPolicy = 0;
-                pending.remove();
-                finishPublicationMass(c, policy);
-            }
-        }
+
+        } catch (RuntimeException | Error failure) {
+            profileFailed = true; profile.failure(ProfilerCounters.EVENTS); throw failure;
+        } finally { profile.end(ProfilerCounters.EVENTS, profileStart, profileFailed ? 0 : profileEventUnits); }
     }
 
     public void geometry(long budget) {
@@ -1178,9 +1239,12 @@ public final class DimensionState implements AutoCloseable {
             throw new IllegalArgumentException("budget");
         }
         long start = System.nanoTime();
+        int profileUnitsBefore = geometryUnits;
         validator.advance(Math.min(restartOptions.validationBudget, budget / 4));
         if (geometryCache != null) {
-            geometryCache.pump(restartMetrics);
+            long profilePump = profile.begin(ProfilerCounters.CACHE_PUMP);
+            try { geometryCache.pump(restartMetrics); }
+            finally { profile.end(ProfilerCounters.CACHE_PUMP, profilePump, 1); }
             startup.prefetch(geometryCache);
         }
         // Validation may consume its entire slice. Discovery needs a separate
@@ -1190,7 +1254,7 @@ public final class DimensionState implements AutoCloseable {
         long snapshotCpuStart = -1;
         boolean noEligibleWork = false;
         boolean eligibleCall = !graph.isStepInProgress() && capture == null && (savePath == null || writing);
-        int preparedAtStart = prepared.size();
+        int preparedAtStart = preparedCount();
         int restoreScans = 0, restoreScanLimit = waitingRestores.size();
         int frontUnits = 0;
         boolean restorePriority = epochRestoreEnabled() && restartOptions.epochFrontLimit && startup.available >= 256;
@@ -1207,8 +1271,7 @@ public final class DimensionState implements AutoCloseable {
             // expansion quota. No scan of the saved territory or distance to players.
             if (epochRestoreEnabled() && (geometryUnits & 63) == 32 && advanceCriticalUnit()) continue;
             // A continuous stream of saved sections must leave progress for fronts.
-            if (geometryUnits % 64 == 0 && !fronts.isEmpty()
-                && savePath == null
+            if (geometryUnits % 64 == 0 && !fronts.isEmpty() && savePath == null
                 && (!restorePriority || frontUnits < restartOptions.frontQuota)) {
                 frontUnits++;
                 Cell c = fronts.removeFirst();
@@ -1280,6 +1343,7 @@ public final class DimensionState implements AutoCloseable {
                 restorePlan = null;
                 continue;
             }
+            if (!appendPrepared.isEmpty() && advanceAppendPrepared()) continue;
             if (!prepared.isEmpty()) {
                 CellBuild b = prepared.peekFirst();
                 if (b.cell.ticket != b.ticket || !provider.isReady(b.cell.cube.key)) {
@@ -1294,6 +1358,9 @@ public final class DimensionState implements AutoCloseable {
                 if (!b.ready) {
                     advanceBuild(b);
                     continue;
+                }
+                if (epochRestoreEnabled() && b.cell.geometry == null) {
+                    prepared.removeFirst(); stagePrepared(b, false); continue;
                 }
                 if (!graph.isStepInProgress() && capture == null) {
                     long validationStart = System.nanoTime();
@@ -1321,6 +1388,10 @@ public final class DimensionState implements AutoCloseable {
                     geometryMetrics.safeWindow(true);
                     long s = System.nanoTime();
                     int massPolicy = publish(b);
+                    if (b.solverWaitStarted != 0)
+                        restartMetrics.add("fallback_solver_wait_ms", (System.nanoTime() - b.solverWaitStarted) / 1e6);
+                    restartMetrics.add("fallback_safe_cut_cells", 1);
+                    if (b.cell.geometry != null && b.replacement) restartMetrics.add("fallback_replacement_cells", 1);
                     long duration = System.nanoTime() - s;
                     geometryMetrics.publishedWait(
                         b.cell.diagnosticQueuedTick < 0 ? -1 : Math.max(0, ticks - b.cell.diagnosticQueuedTick),
@@ -1333,11 +1404,14 @@ public final class DimensionState implements AutoCloseable {
                     geometryMetrics.publicationEvents(System.nanoTime() - eventsStart);
                     long epsilonStart = System.nanoTime();
                     finishPublicationMass(b.cell, massPolicy);
+                    restartMetrics.add("fallback_mass_finalization_ms", (System.nanoTime() - epsilonStart) / 1e6);
                     duration += System.nanoTime() - epsilonStart;
+                    restartMetrics.add("fallback_commit_ms", duration / 1e6);
+                    restartMetrics.max("fallback_commit_max_ms", duration / 1e6);
                     publishNanos += duration;
                     maxPublishNanos = Math.max(maxPublishNanos, duration);
                     geometryMetrics.publish(duration);
-                    startup.published(b.cell, false);
+                    startup.published(b.cell, false, b.replacement);
                     continue;
                 }
             }
@@ -1352,25 +1426,27 @@ public final class DimensionState implements AutoCloseable {
                     continue;
                 }
                 if (job.ready) {
-                    prepared.addLast(job);
-                    job.cell.diagnosticPreparedTick = ticks;
-                    geometryMetrics.preparedAccepted++;
+                    stagePrepared(job, false);
                     job = null;
                 } else {
                     advanceBuild(job);
                 }
                 continue;
             }
-            if (!builds.isEmpty() && prepared.size() < PREPARED_LIMIT
-                && waitingRestores.size() < restartOptions.preparedCubes) {
-                Cell c = builds.removeFirst();
-                if (!c.queued) continue;
+            if (buildWorkReady() && waitingRestores.size() < restartOptions.preparedCubes) {
+                Cell c = nextBuild();
+                if (!c.queued || c.queuedReplacement != replacementQueueSelected) continue;
+                // A stale queue reference may become a replacement after an edit.
+                // Reclassify at dequeue as well as enqueue so it cannot consume
+                // the slots reserved for new geometry while SAFE CUT is blocked.
+                if (c.geometry != null && replacementFull()) {
+                    c.queuedReplacement = true; replacementBuilds.addLast(c); continue;
+                }
                 if (!provider.isReady(c.cube.key)) {
                     c.queued = false;
                     continue;
                 }
-                if ((c.checkpointRestorePending || c.reloadCacheEligible) && !c.cacheAttempted
-                    && geometryCache != null
+                if ((c.checkpointRestorePending || c.reloadCacheEligible) && !c.cacheAttempted && geometryCache != null
                     && provider.isReady(c.cube.key)) {
                     restorePlan = epochRestoreEnabled() ? new EpochRestorePlan(this, c) : new FastRestorePlan(this, c);
                     continue;
@@ -1414,7 +1490,7 @@ public final class DimensionState implements AutoCloseable {
                         geometryMetrics.waitCaptureCalls++;
                     }
                 }
-                if (prepared.size() >= PREPARED_LIMIT && !builds.isEmpty()) {
+                if (preparedCount() >= PREPARED_LIMIT && (!builds.isEmpty() || !replacementBuilds.isEmpty())) {
                     geometryMetrics.preparedFullCalls++;
                 }
             }
@@ -1431,8 +1507,20 @@ public final class DimensionState implements AutoCloseable {
         lastGeometryNanos = System.nanoTime() - start;
         restartMetrics.set("epoch_pending_solver_activation", graph.pendingSolverNodes());
         geometryMetrics
-            .endSafeCall(lastGeometryNanos, budget, !noEligibleWork && budget > 0, preparedAtStart, prepared.size());
+            .endSafeCall(lastGeometryNanos, budget, !noEligibleWork && budget > 0, preparedAtStart, preparedCount());
         geometryMetrics.geometry(lastGeometryNanos, geometryPending() || savePath != null);
+        restartMetrics.add("geometry_used_ms", lastGeometryNanos / 1e6);
+        lastGeometryBlockingMask = (capture != null ? 1L << ProfilerCounters.CAPTURE_BLOCK : 0)
+            | (graph.isStepInProgress() ? 1L << ProfilerCounters.SOLVER_STEP : 0)
+            | (preparedCount() >= PREPARED_LIMIT ? 1L << ProfilerCounters.PREPARED_FULL : 0);
+        lastGeometryReason = !noEligibleWork && budget > 0 ? ProfilerCounters.BUDGET_END
+            : capture != null ? ProfilerCounters.CAPTURE_BLOCK
+            : preparedCount() >= PREPARED_LIMIT ? ProfilerCounters.PREPARED_FULL
+            : graph.isStepInProgress() && !prepared.isEmpty() ? ProfilerCounters.WAIT_SAFE_CUT
+            : ProfilerCounters.NO_WORK;
+        profile.reason(lastGeometryReason, lastGeometryNanos);
+        profile.record(ProfilerCounters.GEOMETRY, lastGeometryNanos, geometryUnits - profileUnitsBefore);
+        queueMetrics();
         if (budget > 0 && lastGeometryNanos > budget) {
             budgetOverruns++;
             geometryMetrics.budgetOverruns++;
@@ -1448,33 +1536,112 @@ public final class DimensionState implements AutoCloseable {
         return partitionWorkspace;
     }
 
+    private int preparedCount() { return prepared.size() + appendPrepared.size(); }
+    private boolean replacementFull() {
+        return epochRestoreEnabled() && prepared.size() >= Math.max(1, PREPARED_LIMIT / 2);
+    }
+    private boolean buildWorkReady() {
+        return preparedCount() < PREPARED_LIMIT && (!builds.isEmpty() || !replacementBuilds.isEmpty() && !replacementFull());
+    }
+    private Cell nextBuild() {
+        // Reserve preparation slots for new geometry while replacements wait for SAFE CUT.
+        if (!replacementBuilds.isEmpty() && !replacementFull()
+            && (builds.isEmpty() || (geometryUnits & 7) == 0)) {
+            replacementQueueSelected = true; return replacementBuilds.removeFirst();
+        }
+        replacementQueueSelected = false; return builds.removeFirst();
+    }
+    private void stagePrepared(CellBuild build, boolean priority) {
+        if (epochRestoreEnabled() && build.cell.geometry == null && build.ready) appendPrepared.addLast(build);
+        else if (priority) prepared.addFirst(build); else prepared.addLast(build);
+        build.cell.diagnosticPreparedTick = ticks;
+        build.cell.diagnosticPreparedNanos = System.nanoTime();
+        geometryMetrics.preparedAccepted++;
+        if (!build.fromCache) restartMetrics.add("fallback_prepared_ready", 1);
+    }
+    private void discardBuild(CellBuild build) {
+        profile.reason(build.cell.ticket != build.ticket ? ProfilerCounters.STALE_TICKET : ProfilerCounters.INVALID_WORLD, 0);
+        profile.outcome(ProfilerCounters.BUILD_SNAPSHOT, 0, 1, 0);
+        build.cell.diagnosticPreparedTick = -1; build.cell.building = false;
+        staleJobs++; geometryMetrics.staleJobs++;
+        restartMetrics.add("fallback_invalidated", 1); restartMetrics.add("build_ticket_restarts", 1);
+        enqueue(build.cell);
+    }
+    private boolean advanceAppendPrepared() {
+        CellBuild b = appendPrepared.peekFirst();
+        if (b.cell.ticket != b.ticket || !provider.isReady(b.cell.cube.key)) {
+            appendPrepared.removeFirst(); discardBuild(b); return true;
+        }
+        if (!epochRestoreEnabled() || b.cell.geometry != null) {
+            if (!canFastCommit()) return false;
+            appendPrepared.removeFirst(); prepared.addFirst(b); return true;
+        }
+        if (!canEpochCommit()) return false;
+        if (!b.ready) {
+            advanceBuild(b);
+            if (b.ready && b.epochAppend != null) b.epochAppend.refreshed();
+            return true;
+        }
+        if (b.epochAppend == null) b.epochAppend = new EpochBuildAppend(b);
+        int result = b.epochAppend.advance();
+        if (result > 0) return true;
+        appendPrepared.removeFirst();
+        if (result < 0) { discardBuild(b); return true; }
+        geometryMetrics.publishedWait(b.cell.diagnosticQueuedTick < 0 ? -1 : ticks - b.cell.diagnosticQueuedTick,
+            b.cell.diagnosticPreparedTick < 0 ? -1 : ticks - b.cell.diagnosticPreparedTick);
+        b.cell.building = false; b.cell.diagnosticQueuedTick = b.cell.diagnosticPreparedTick = -1;
+        startup.published(b.cell, false, b.replacement);
+        return true;
+    }
+    private void queueMetrics() {
+        restartMetrics.set("fallback_prepare_ms", fallbackPrepareNanos / 1e6);
+        CellBuild a = appendPrepared.peekFirst(), r = prepared.peekFirst();
+        restartMetrics.set("prepared_append_queue", appendPrepared.size());
+        restartMetrics.set("prepared_replacement_queue", prepared.size());
+        restartMetrics.set("build_replacement_queue", replacementBuilds.size());
+        restartMetrics.set("ready_but_blocked", graph.isStepInProgress() ? prepared.size() : 0);
+        if (graph.isStepInProgress() && r != null && r.ready) {
+            restartMetrics.add("fallback_solver_blocked", 1);
+            if (r.solverWaitStarted == 0) r.solverWaitStarted = System.nanoTime();
+        }
+        if (preparedCount() >= PREPARED_LIMIT || replacementFull()) restartMetrics.add("prepared_backpressure_calls", 1);
+        restartMetrics.set("append_head_age_ticks", a == null ? 0 : ticks - a.cell.diagnosticPreparedTick);
+        restartMetrics.set("replacement_head_age_ticks", r == null ? 0 : ticks - r.cell.diagnosticPreparedTick);
+        restartMetrics.set("append_head_age_ms", a == null ? 0 : (System.nanoTime() - a.cell.diagnosticPreparedNanos) / 1e6);
+        restartMetrics.set("replacement_head_age_ms", r == null ? 0 : (System.nanoTime() - r.cell.diagnosticPreparedNanos) / 1e6);
+        Cell c = builds.peekFirst();
+        restartMetrics.set("build_head_age_ticks", c == null ? 0 : Math.max(0, ticks - c.diagnosticQueuedTick));
+        restartMetrics.set("runtime_wall_ms", (System.nanoTime() - runtimeOpenedNanos) / 1e6);
+        restartMetrics.set("runtime_server_ticks", ticks);
+        profile.queue(ProfilerCounters.BUILD_QUEUE, builds.size() + replacementBuilds.size(), 0);
+        profile.queue(ProfilerCounters.APPEND_QUEUE, appendPrepared.size(),
+            (long)(restartMetrics.get("append_head_age_ms") * 1e6));
+        profile.queue(ProfilerCounters.REPLACEMENT_QUEUE, prepared.size(),
+            (long)(restartMetrics.get("replacement_head_age_ms") * 1e6));
+    }
+
     private boolean advanceCriticalUnit() {
         if (job != null) {
-            if (criticalBuilds.isEmpty() && job.cell.geometry == null
-                && job.cell.sourceHead == null
-                && job.cell.events.isEmpty()
-                && job.cell.waiting.isEmpty()) return false;
+            if (criticalBuilds.isEmpty() && job.cell.geometry == null && job.cell.sourceHead == null
+                && job.cell.events.isEmpty() && job.cell.waiting.isEmpty()) return false;
             if (job.cell.ticket != job.ticket || !provider.isReady(job.cell.cube.key)) return false;
             if (!job.ready) advanceBuild(job);
             else {
-                if (job.cell.geometry != null || job.cell.sourceHead != null || !job.cell.events.isEmpty())
-                    prepared.addFirst(job);
-                else prepared.addLast(job);
-                job.cell.diagnosticPreparedTick = ticks;
-                geometryMetrics.preparedAccepted++;
+                stagePrepared(job, job.cell.geometry != null || job.cell.sourceHead != null || !job.cell.events.isEmpty());
                 job = null;
             }
             return true;
         }
-        if (prepared.size() >= PREPARED_LIMIT) return false;
+        if (preparedCount() >= PREPARED_LIMIT) return false;
         for (int scanned = 0; scanned < 8 && !criticalBuilds.isEmpty(); scanned++) {
             Cell c = criticalBuilds.removeFirst();
             c.criticalQueued = false;
             if (!c.queued || c.building || !provider.isReady(c.cube.key)) continue;
-            c.queued = false;
-            c.building = true;
-            if (c.geometry == null) geometryMetrics.newJobs++;
-            else geometryMetrics.rebuildJobs++;
+            if (c.geometry != null && replacementFull()) {
+                c.criticalQueued = true; criticalBuilds.addLast(c); return false;
+            }
+            c.queued = false; c.building = true;
+            if (c.geometry == null) geometryMetrics.newJobs++; else geometryMetrics.rebuildJobs++;
             job = new CellBuild(this, c);
             geometryMetrics.jobsStarted++;
             c.status = c.geometry == null ? Status.BUILDING : Status.DIRTY;
@@ -1483,13 +1650,20 @@ public final class DimensionState implements AutoCloseable {
         return false;
     }
 
+    void recordFallbackPreparation(long nanos) {
+        fallbackPrepareNanos += nanos;
+    }
+
     private void advanceBuild(CellBuild b) {
         long start = System.nanoTime();
         int phase = b.diagnosticStage();
         boolean contacts = b.inContacts();
         b.advance();
         long duration = System.nanoTime() - start;
+        if (!b.fromCache) recordFallbackPreparation(duration);
         geometryMetrics.phase(phase, duration);
+        profile.record(ProfilerCounters.BUILD_SNAPSHOT + phase, duration, b.diagnosticUnits);
+        if (b.ready) profile.batch(ProfilerCounters.BUILD_PARTITION, b.local.count);
         if (phase == GeometryMetrics.PARTITION && b.diagnosticStage() != phase) {
             geometryMetrics.partitionsCompleted++;
             geometryMetrics.partitionNodes += b.local.count;
@@ -1522,11 +1696,13 @@ public final class DimensionState implements AutoCloseable {
         }
     }
 
-    private void refreshFrontMask(Cell c) {
+    private void refreshFrontMask(Cell c) { refreshFrontMask(c, null); }
+
+    private void refreshFrontMask(Cell c, NeighborView view) {
         int mask = 0;
         for (int d = 0; d < 6; d++) {
-            CellKey key = CellBuild.neighbor(c.key, d);
-            Cell other = cell(key, false);
+            CellKey key = view == null ? CellBuild.neighbor(c.key, d) : view.keys[d];
+            Cell other = view == null ? cell(key, false) : view.current(d);
             // Saved neighbors belong to the restore index, not expansion. Watching
             // them as fronts repeatedly scans world blocks while awaiting a safe
             // commit, and bypasses the cache's region-coherent restore order.
@@ -1598,7 +1774,6 @@ public final class DimensionState implements AutoCloseable {
     }
 
     static final class PreparedMass {
-
         double[] masses;
         double[] checkpointMass;
         final Map<Integer, Double> trapped = new LinkedHashMap<>();
@@ -1609,53 +1784,50 @@ public final class DimensionState implements AutoCloseable {
 
     /** All remapping is private; parked/trapped stay authoritative until the append. */
     PreparedMass prepareEpochMass(Cell c, Geometry g) {
-        PreparedMass result = new PreparedMass();
-        result.readyAfter = publicationMassBoundary(c);
-        result.cold = c.checkpointRestorePending;
-        result.policy = (result.cold || c.parked != null ? PUBLICATION_EPSILON : 0)
-            | (result.cold ? PUBLICATION_COLD : 0);
-        MassRecord old = c.parked;
-        result.exact = result.cold && old != null
-            && COLD_EXACT_MASS
-            && old.masses.length == g.volumes.length
-            && old.sameLabels(g.labels)
-            && Arrays.equals(old.volumes, g.volumes);
-        result.masses = new double[g.volumes.length];
-        result.trapped.putAll(c.trapped);
-        long start = System.nanoTime();
-        if (result.exact) System.arraycopy(old.masses, 0, result.masses, 0, old.masses.length);
-        else if (old != null) {
-            if (massRemapper == null) massRemapper = new CellMassRemapper();
-            System.arraycopy(
-                massRemapper.remap(old, g.labels, g.volumes.length),
-                0,
-                result.masses,
-                0,
-                result.masses.length);
-            for (int i = 0; i < old.masses.length; i++)
-                if (massRemapper.trapped(i)) add(result.trapped, massRemapper.representative(i), old.masses[i]);
-        }
-        if (result.cold) result.checkpointMass = result.masses.clone();
-        else if (c.checkpointTracking != null) {
-            if (massRemapper == null) massRemapper = new CellMassRemapper();
-            result.checkpointMass = Arrays
-                .copyOf(massRemapper.remap(c.checkpointTracking, g.labels, g.volumes.length), g.volumes.length);
-        }
-        for (Iterator<Map.Entry<Integer, Double>> it = result.trapped.entrySet()
-            .iterator(); it.hasNext();) {
-            Map.Entry<Integer, Double> e = it.next();
-            int local = g.labels.get(e.getKey());
-            if (local >= 0) {
-                result.masses[local] += e.getValue();
-                it.remove();
+        long profileStart = profile.begin(ProfilerCounters.MASS_PREPARE);
+        boolean profileFailed = false;
+        try {
+            PreparedMass result = new PreparedMass();
+            result.readyAfter = publicationMassBoundary(c);
+            result.cold = c.checkpointRestorePending;
+            result.policy = (result.cold || c.parked != null ? PUBLICATION_EPSILON : 0)
+                | (result.cold ? PUBLICATION_COLD : 0);
+            MassRecord old = c.parked;
+            result.exact = result.cold && old != null && COLD_EXACT_MASS
+                && old.masses.length == g.volumes.length && old.sameLabels(g.labels)
+                && Arrays.equals(old.volumes, g.volumes);
+            result.masses = new double[g.volumes.length];
+            result.trapped.putAll(c.trapped);
+            long start = System.nanoTime();
+            if (result.exact) System.arraycopy(old.masses, 0, result.masses, 0, old.masses.length);
+            else if (old != null) {
+                if (massRemapper == null) massRemapper = new CellMassRemapper();
+                System.arraycopy(massRemapper.remap(old, g.labels, g.volumes.length), 0,
+                    result.masses, 0, result.masses.length);
+                for (int i = 0; i < old.masses.length; i++)
+                    if (massRemapper.trapped(i)) add(result.trapped, massRemapper.representative(i), old.masses[i]);
             }
-        }
-        if (result.cold) {
-            double ms = (System.nanoTime() - start) / 1e6;
-            if (result.exact) geometryMetrics.coldExactMassMs += ms;
-            else geometryMetrics.coldFallbackMassMs += ms;
-        }
-        return result;
+            if (result.cold) result.checkpointMass = result.masses.clone();
+            else if (c.checkpointTracking != null) {
+                if (massRemapper == null) massRemapper = new CellMassRemapper();
+                result.checkpointMass = Arrays.copyOf(massRemapper.remap(c.checkpointTracking, g.labels, g.volumes.length),
+                    g.volumes.length);
+            }
+            for (Iterator<Map.Entry<Integer, Double>> it = result.trapped.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<Integer, Double> e = it.next();
+                int local = g.labels.get(e.getKey());
+                if (local >= 0) { result.masses[local] += e.getValue(); it.remove(); }
+            }
+            if (result.cold) {
+                double ms = (System.nanoTime() - start) / 1e6;
+                if (result.exact) geometryMetrics.coldExactMassMs += ms;
+                else geometryMetrics.coldFallbackMassMs += ms;
+            }
+            return result;
+
+        } catch (RuntimeException | Error failure) {
+            profileFailed = true; profile.failure(ProfilerCounters.MASS_PREPARE); throw failure;
+        } finally { profile.end(ProfilerCounters.MASS_PREPARE, profileStart, profileFailed ? 0 : g.volumes.length); }
     }
 
     void publishEpochGeometry(Cell c, Geometry g, GeometryPack pack, PreparedMass mass) {
@@ -1771,8 +1943,8 @@ public final class DimensionState implements AutoCloseable {
         c.publicationMassAfter = massBoundary;
         if (c.checkpointTracking != null) {
             if (massRemapper == null) massRemapper = new CellMassRemapper();
-            g.checkpointMass = Arrays
-                .copyOf(massRemapper.remap(c.checkpointTracking, g.labels, g.volumes.length), g.volumes.length);
+            g.checkpointMass = Arrays.copyOf(massRemapper.remap(c.checkpointTracking, g.labels, g.volumes.length),
+                g.volumes.length);
             c.checkpointTracking = null;
         }
         if (c.trapped.isEmpty()) c.trapped.clear();
@@ -1808,54 +1980,71 @@ public final class DimensionState implements AutoCloseable {
 
     /** Called once, after the existing global applyEvents, on the same idle boundary. */
     void finishPublicationMass(Cell c, int policy) {
-        if (graph.isStepInProgress() || steps < c.publicationMassAfter) {
-            c.pendingMassPolicy |= policy;
-            if (c.pendingMassPolicy != 0) pendingPublicationMass.add(c);
-            return;
-        }
-        policy |= c.pendingMassPolicy;
-        c.pendingMassPolicy = 0;
-        pendingPublicationMass.remove(c);
-        if ((policy & PUBLICATION_EPSILON) == 0) {
-            return;
-        }
-        double restoredCheckpoint = 0;
-        for (int i = 0; i < c.geometry.ids.length; i++) {
-            int id = c.geometry.ids[i];
-            double mass = graph.nodeMass(id);
-            // All remap/trapped/waiting/deferred-event contributions have arrived.
-            // Exactly 1.0 survives. Never apply epsilon to a per-voxel share.
-            if (mass > 0 && mass < 1.0) {
-                graph.addNodeMass(id, -mass);
-                geometryMetrics.epsilonDroppedMass += mass;
-                // The existing persisted removal ledger explains the loss after save/load.
-                removed += mass;
-                mass = 0;
+        long profileStart = profile.begin(ProfilerCounters.MASS_FINISH);
+        boolean profileFailed = false;
+        try {
+            if (c.geometry == null) {
+                c.pendingMassPolicy |= policy;
+                pendingPublicationMass.remove(c); // dormant, retained by the Cell/parked checkpoint
+                return;
             }
-            if ((policy & PUBLICATION_COLD) != 0) {
-                geometryMetrics.coldRestoredMass += mass;
+            if (graph.isStepInProgress() || steps < c.publicationMassAfter) {
+                c.pendingMassPolicy |= policy;
+                if (c.pendingMassPolicy != 0) pendingPublicationMass.add(c);
+                return;
             }
-            if (mass != 0 && c.geometry.checkpointMass != null) restoredCheckpoint += c.geometry.checkpointMass[i];
-        }
-        if (c.geometry.checkpointMass != null) {
-            startup.massRestored(restoredCheckpoint);
-            c.geometry.checkpointMass = null;
-        }
+            policy |= c.pendingMassPolicy;
+            c.pendingMassPolicy = 0;
+            pendingPublicationMass.remove(c);
+            if ((policy & PUBLICATION_EPSILON) == 0) {
+                return;
+            }
+            double restoredCheckpoint = 0;
+            for (int i = 0; i < c.geometry.ids.length; i++) {
+                int id = c.geometry.ids[i];
+                double mass = graph.nodeMass(id);
+                // All remap/trapped/waiting/deferred-event contributions have arrived.
+                // Exactly 1.0 survives. Never apply epsilon to a per-voxel share.
+                if (mass > 0 && mass < 1.0) {
+                    graph.addNodeMass(id, -mass);
+                    geometryMetrics.epsilonDroppedMass += mass;
+                    // The existing persisted removal ledger explains the loss after save/load.
+                    removed += mass;
+                    mass = 0;
+                }
+                if ((policy & PUBLICATION_COLD) != 0) {
+                    geometryMetrics.coldRestoredMass += mass;
+                }
+                if (mass != 0 && c.geometry.checkpointMass != null) restoredCheckpoint += c.geometry.checkpointMass[i];
+            }
+            if (c.geometry.checkpointMass != null) {
+                startup.massRestored(restoredCheckpoint);
+                c.geometry.checkpointMass = null;
+            }
+
+        } catch (RuntimeException | Error failure) {
+            profileFailed = true; profile.failure(ProfilerCounters.MASS_FINISH); throw failure;
+        } finally { profile.end(ProfilerCounters.MASS_FINISH, profileStart, profileFailed ? 0 : 1); }
     }
 
     private boolean publicationAccountingReady() {
-        for (Cell c : pendingPublicationMass) if (c.geometry != null && steps < c.publicationMassAfter) return false;
+        for (Cell c : pendingPublicationMass)
+            if (c.geometry != null && steps < c.publicationMassAfter) return false;
         return true;
     }
 
-    private long publicationMassBoundary(Cell c) {
-        long boundary = steps, ordinal = steps;
-        for (Frame frame : frames) {
-            ordinal++;
-            if (frame.contributesTo(c.key)) boundary = ordinal;
-        }
-        return boundary;
+    void addFrame(Frame frame) {
+        frames.addLast(frame);
+        Long ordinal = Long.valueOf(steps + frames.size());
+        for (CellKey key : frame.contributionCells()) lastPendingContribution.put(key, ordinal);
     }
+
+    long publicationMassBoundary(Cell c) {
+        profile.count(ProfilerCounters.FRAME_INDEX, 1);
+        return Math.max(steps, lastPendingContribution.getOrDefault(c.key, steps));
+    }
+
+    int indexedContributionCells() { return lastPendingContribution.size(); }
 
     private void preserveCheckpointProgress(Cell c) {
         Geometry g = c.geometry;
@@ -1867,11 +2056,15 @@ public final class DimensionState implements AutoCloseable {
     public void geometryCache(Path directory) {
         check(dimension);
         if (restartOptions.cache && geometryCache == null)
+            {
             geometryCache = new GeometryCache(directory, dimension, config, restartOptions.cacheBytes);
+            geometryCache.profile(profile.worker(1));
+        }
     }
 
     public void dimensionOpenedAt(long monotonicNanos) {
         startup.openedAt(monotonicNanos);
+        profile.openedAt(monotonicNanos);
     }
 
     boolean canFastCommit() {
@@ -1886,9 +2079,7 @@ public final class DimensionState implements AutoCloseable {
         return appendFailure == null && epochRestoreEnabled() && capture == null && (savePath == null || writing);
     }
 
-    void failAppend(Throwable cause) {
-        appendFailure = cause;
-    }
+    void failAppend(Throwable cause) { appendFailure = cause; }
 
     void reserveFast(int nodes, int edges) {
         int slots = graph.reserveSparse(nodes, edges);
@@ -1919,16 +2110,21 @@ public final class DimensionState implements AutoCloseable {
 
     boolean prepareEpochCapacity(int nodes, int edges) {
         long start = System.nanoTime();
+        long profileOldCapacity = profile.level() == ProfilerCounters.OFF ? 0 : graph.appendCapacityBytes();
         boolean ready = graph.prepareAppendCapacity(nodes, edges);
         int slots = Math.addExact(graph.allocatedNodeSlots(), nodes);
         if (ready && owners.length < slots) {
-            owners = Arrays.copyOf(owners, IntList.capacity(owners.length, slots));
-            ready = false;
+            owners = Arrays.copyOf(owners, IntList.capacity(owners.length, slots)); ready = false;
         } else if (ready && frontWatch.length < slots) {
-            frontWatch = Arrays.copyOf(frontWatch, IntList.capacity(frontWatch.length, slots));
-            ready = false;
+            frontWatch = Arrays.copyOf(frontWatch, IntList.capacity(frontWatch.length, slots)); ready = false;
         }
-        double ms = (System.nanoTime() - start) / 1e6;
+        long profileNanos = System.nanoTime() - start;
+        profile.record(ProfilerCounters.RESERVE, profileNanos, (long)nodes + edges);
+        if (profile.level() != ProfilerCounters.OFF)
+            profile.detail(ProfilerCounters.RESERVE, profileOldCapacity, graph.appendCapacityBytes());
+        profile.outcome(ProfilerCounters.RESERVE, ready ? 1 : 0, ready ? 0 : 1, 0);
+        if (!ready) profile.reason(ProfilerCounters.CAPACITY_RESERVE, profileNanos);
+        double ms = profileNanos / 1e6;
         restartMetrics.add("epoch_append_reserve_ms", ms);
         restartMetrics.max("epoch_append_reserve_max_ms", ms);
         return ready;
@@ -1941,11 +2137,13 @@ public final class DimensionState implements AutoCloseable {
         }
     }
 
+    void refreshFastFronts(Set<Cell> cells, Map<Cell, NeighborView> views) {
+        for (Cell c : cells) { refreshFrontMask(c, views.get(c)); front(c); }
+    }
+
     void stageCachedBuild(FastRestorePlan.Entry entry) {
         CellBuild b = new CellBuild(this, entry);
-        prepared.addLast(b);
-        b.cell.diagnosticPreparedTick = ticks;
-        geometryMetrics.preparedAccepted++;
+        stagePrepared(b, false);
     }
 
     void recordFastPublication(long nanos, int count) {
@@ -1959,10 +2157,8 @@ public final class DimensionState implements AutoCloseable {
         for (CubeRecord cube : cubes.values()) for (Cell c : cube.cells) if (c != null) {
             if (c.parked != null) mass += c.parked.bytes();
             Geometry g = c.geometry;
-            if (g != null) published += 256L + g.labels.bytes()
-                + g.distance.bytes()
-                + 8L * g.volumes.length
-                + 24L * g.dependencies.length
+            if (g != null) published += 256L + g.labels.bytes() + g.distance.bytes()
+                + 8L * g.volumes.length + 24L * g.dependencies.length
                 + (g.epochs == null ? 0 : 32L + 16L * g.dependencies.length);
         }
         restartMetrics.set("memory_mass_records_bytes", mass);
@@ -2104,13 +2300,10 @@ public final class DimensionState implements AutoCloseable {
     }
 
     public boolean geometryPending() {
-        return validator.runnable() || startup.pending()
-            || startup.discovering()
-            || restorePlan != null
-            || !waitingRestores.isEmpty()
+        return validator.runnable() || startup.pending() || startup.discovering() || restorePlan != null || !waitingRestores.isEmpty()
             || job != null
-            || !prepared.isEmpty()
-            || !builds.isEmpty()
+            || !prepared.isEmpty() || !appendPrepared.isEmpty()
+            || !builds.isEmpty() || !replacementBuilds.isEmpty()
             || !fronts.isEmpty();
     }
 
@@ -2121,20 +2314,17 @@ public final class DimensionState implements AutoCloseable {
     }
 
     private boolean restoreWorkReady() {
-        return fastWorkReady() || startup.available > 0 && (startup.pending() || !builds.isEmpty()
-            || job != null
+        return fastWorkReady() || startup.available > 0 && (startup.pending() || !builds.isEmpty() || job != null
+            || !appendPrepared.isEmpty() && (canEpochCommit() || canFastCommit())
             || !prepared.isEmpty() && (!prepared.peekFirst().ready || canFastCommit()));
     }
 
     /** O(queue cap), no scan of unloaded saved territory and no world snapshots. */
     public int geometryWorkWeight() {
-        boolean runnable = validator.runnable() || startup.pending()
-            || startup.discovering()
-            || job != null
-            || !fronts.isEmpty()
-            || fastWorkReady()
-            || !builds.isEmpty() && prepared.size() < PREPARED_LIMIT
-                && waitingRestores.size() < restartOptions.preparedCubes
+        boolean runnable = validator.runnable() || startup.pending() || startup.discovering() || job != null
+            || !fronts.isEmpty() || fastWorkReady()
+            || buildWorkReady() && waitingRestores.size() < restartOptions.preparedCubes
+            || !appendPrepared.isEmpty() && (canEpochCommit() || canFastCommit())
             || !prepared.isEmpty() && (!prepared.peekFirst().ready || canFastCommit())
             || savePath != null && !writing && !graph.isStepInProgress();
         return !runnable ? 0 : frames.size() <= 1 && restoreWorkReady() ? 4 : 1;
@@ -2175,7 +2365,7 @@ public final class DimensionState implements AutoCloseable {
 
     /** O(1) queue overview; pending work is not necessarily runnable right now. */
     public int[] geometryQueues() {
-        return new int[] { builds.size(), job == null ? 0 : 1, prepared.size(), fronts.size() };
+        return new int[] { builds.size() + replacementBuilds.size(), job == null ? 0 : 1, preparedCount(), fronts.size() };
     }
 
     /** Expensive only when explicitly requested; never run this in the tick hot path. */
@@ -2358,13 +2548,19 @@ public final class DimensionState implements AutoCloseable {
                 failure = e;
             } finally {
                 if (attachment != null) {
-                    try {
-                        attachment.afterWrite();
-                    } catch (Exception cleanupFailure) {
-                        System.err.println("SMOG save attachment close deferred: " + cleanupFailure);
+                    try { attachment.afterWrite(); }
+                    catch (Exception cleanupFailure) {
+                        if (failure == null) failure = cleanupFailure; else failure.addSuppressed(cleanupFailure);
+                        System.err.println("SMOG checkpoint attachment operation=afterWrite timestamp=" + java.time.Instant.now()
+                            + " dimension=" + dimension + " path=" + path + " saveStatus=FAILED");
+                        cleanupFailure.printStackTrace(System.err);
                     }
                 }
-                ioNanos += System.nanoTime() - start;
+                long profileIoNanos = System.nanoTime() - start;
+                checkpointProfile.record(ProfilerCounters.CHECKPOINT_WRITE, profileIoNanos, data.cells.size());
+                if (failure != null) checkpointProfile.failure(ProfilerCounters.CHECKPOINT_WRITE);
+                checkpointProfile.flush(-1, start + profileIoNanos, true);
+                ioNanos += profileIoNanos;
                 if (cpuStart >= 0 && ioCpuNanos >= 0) {
                     ioCpuNanos += cpu.getCurrentThreadCpuTime() - cpuStart;
                 } else {
@@ -2393,6 +2589,10 @@ public final class DimensionState implements AutoCloseable {
         s.restartMetrics.set("checkpoint_bytes", loaded.data.bytes);
         s.restartMetrics.set("checkpoint_cells", loaded.data.cells.size());
         s.restartMetrics.set("checkpoint_format_version", loaded.data.formatVersion);
+        s.profile.checkpoint(loaded.data.cells.isEmpty() ? ProfilerCounters.CheckpointStatus.EMPTY
+            : ProfilerCounters.CheckpointStatus.LOADED, false);
+        s.profile.record(ProfilerCounters.CHECKPOINT_READ, loaded.data.readNanos, loaded.data.bytes);
+        s.profile.record(ProfilerCounters.CHECKPOINT_DECODE, loaded.data.decodeNanos, loaded.data.cells.size());
         return s;
     }
 

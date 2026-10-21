@@ -6,14 +6,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
+import java.nio.file.LinkOption;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -23,6 +23,7 @@ import java.util.concurrent.TimeoutException;
 import org.smogmod.compat.gt5u.PendingPulse;
 
 import smog.BlockPos;
+import smog.ProfilerCounters;
 import smog.DimensionState;
 import smog.SmogConfig;
 import smog.WorldSnapshotProvider;
@@ -36,6 +37,8 @@ public final class WorldStore {
     private final Path directory;
 
     private volatile String lastValid;
+    public long pollNanos;
+    public ProfilerCounters.CheckpointStatus loadStatus = ProfilerCounters.CheckpointStatus.MISSING;
 
     private CompletableFuture<Path> active;
 
@@ -55,6 +58,58 @@ public final class WorldStore {
     public volatile long safeCutWaitNanos, queueCopyNanos, writeNanos, commitNanos, lastSuccessMillis;
 
     private volatile long writeStarted;
+    private volatile String operation = "idle", operationPath = "", failedOperation = "", failedPath = "";
+
+    /** A failed acquisition closes its channel even when called without an outer callback.
+     * Never delete a marker whose lease was not acquired by this writer. */
+    static final class BundleLease implements AutoCloseable {
+        private final Path marker;
+        private java.nio.channels.FileChannel channel;
+        private java.nio.channels.FileLock lock;
+        private BundleLease(Path marker) { this.marker = marker; }
+        static BundleLease acquire(Path marker, long timeoutMillis) throws IOException {
+            return acquire(marker, timeoutMillis, java.nio.channels.FileChannel.open(marker,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE));
+        }
+        static BundleLease acquire(Path marker, long timeoutMillis, java.nio.channels.FileChannel channel) throws IOException {
+            BundleLease lease = new BundleLease(marker);
+            lease.channel = channel;
+            try {
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+                while (lease.lock == null) {
+                    if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Interrupted checkpoint lease");
+                    try { lease.lock = lease.channel.tryLock(); }
+                    catch (java.nio.channels.OverlappingFileLockException busy) { throw new IOException("Checkpoint lease already held: " + marker, busy); }
+                    if (lease.lock != null) return lease;
+                    if (System.nanoTime() >= deadline) throw new IOException("Checkpoint lease timeout: " + marker);
+                    try { Thread.sleep(10); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt(); throw new java.io.InterruptedIOException("Interrupted checkpoint lease");
+                    }
+                }
+                return lease;
+            } catch (IOException | RuntimeException failure) {
+                if (lease.channel != null) try { lease.channel.close(); } catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+                throw failure;
+            }
+        }
+        @Override public void close() throws IOException {
+            IOException failure = null;
+            boolean channelClosed = false;
+            try { if (lock != null && lock.isValid()) lock.release(); }
+            catch (IOException problem) { failure = problem; }
+            finally {
+                if (channel != null) try { channel.close(); channelClosed = true; }
+                catch (IOException problem) { if (failure == null) failure = problem; else failure.addSuppressed(problem); }
+            }
+            if (lock != null && channelClosed && !lock.isValid()) {
+                try { Files.deleteIfExists(marker); }
+                catch (IOException problem) { if (failure == null) failure = problem; else failure.addSuppressed(problem); }
+            }
+            if (failure != null) throw failure;
+        }
+    }
+
 
     public WorldStore(Path directory) {
         this.directory = directory;
@@ -62,6 +117,7 @@ public final class WorldStore {
 
     public DimensionState load(int dimension, WorldSnapshotProvider provider, List<PendingPulse> pulses)
         throws IOException {
+        loadStatus = ProfilerCounters.CheckpointStatus.FAILED;
         Files.createDirectories(directory);
         IOException failure = null;
         for (String pointer : new String[] { "CURRENT", "PREVIOUS" }) {
@@ -83,6 +139,10 @@ public final class WorldStore {
                 }
                 pulses.addAll(restored);
                 this.state = state;
+                loadStatus = "PREVIOUS".equals(pointer) ? ProfilerCounters.CheckpointStatus.FALLBACK_PREVIOUS
+                    : state.restartMetrics.get("checkpoint_cells") == 0 ? ProfilerCounters.CheckpointStatus.EMPTY
+                    : ProfilerCounters.CheckpointStatus.LOADED;
+                state.profile.checkpoint(loadStatus, "PREVIOUS".equals(pointer));
                 this.pulses = pulses;
                 lastValid = name;
                 committedVersion = version;
@@ -95,8 +155,10 @@ public final class WorldStore {
             }
         }
         if (failure != null) {
+            loadStatus = ProfilerCounters.CheckpointStatus.FAILED;
             throw failure;
         }
+        loadStatus = ProfilerCounters.CheckpointStatus.MISSING;
         state = new DimensionState(dimension, SmogConfig.throat8(), provider);
         this.pulses = pulses;
         return state;
@@ -149,10 +211,17 @@ public final class WorldStore {
                     System.out.println("SMOG checkpoint committed: " + lastValid);
                 } catch (CompletionException exception) {
                     failed++;
+                    state.profile.failure(ProfilerCounters.SAVE_POLL);
+                    state.profile.reason(ProfilerCounters.IO_ERROR, 0);
+                    String failedPhase = phase;
                     phase = "FAILED";
                     error = exception.getCause()
                         .toString();
-                    System.err.println("SMOG checkpoint FAILED; previous checkpoint retained: " + error);
+                    System.err.println("SMOG WorldStore operation=" + (failedOperation.isEmpty() ? operation : failedOperation)
+                        + " path=" + (failedPath.isEmpty() ? operationPath : failedPath)
+                        + " timestamp=" + java.time.Instant.now() + " dimension=" + state.dimension
+                        + " writerPhase=" + failedPhase + " saveStatus=FAILED lastCommitted=" + lastValid);
+                    exception.getCause().printStackTrace(System.err);
                     requested = false;
                 }
                 active = null;
@@ -161,7 +230,10 @@ public final class WorldStore {
                 startRequested();
             }
         } finally {
-            maxServerNanos = Math.max(maxServerNanos, System.nanoTime() - start);
+            long duration = System.nanoTime() - start;
+            pollNanos += duration;
+            if (state != null) state.profile.record(ProfilerCounters.SAVE_POLL, duration, 1);
+            maxServerNanos = Math.max(maxServerNanos, duration);
         }
     }
 
@@ -170,7 +242,7 @@ public final class WorldStore {
         cutVersion = -1;
         requestedAt = System.nanoTime();
         phase = "REQUESTED";
-        error = "";
+        error = ""; failedOperation = failedPath = "";
         Path bundle = directory.resolve("bundle-" + UUID.randomUUID());
         active = state.requestSave(bundle.resolve("core"), () -> {
             long start = System.nanoTime();
@@ -182,47 +254,55 @@ public final class WorldStore {
             queueCopyNanos = System.nanoTime() - start;
             phase = "CAPTURING";
             return new DimensionState.SaveAttachment() {
-
-                private java.nio.channels.FileChannel lease;
-                private java.nio.channels.FileLock lock;
+                private BundleLease lease;
+                private boolean committed;
 
                 @Override
                 public void beforeWrite() {
                     try {
                         Files.createDirectories(bundle);
-                        lease = java.nio.channels.FileChannel.open(
-                            bundle.resolve(".in-progress"),
-                            java.nio.file.StandardOpenOption.CREATE,
-                            java.nio.file.StandardOpenOption.WRITE);
-                        lock = lease.lock();
+                        operation = "lease-acquire"; operationPath = directory.relativize(bundle.resolve(".in-progress")).toString();
+                        long timeout = Math.max(0, Math.min(10000, Integer.getInteger("smog.checkpointLockTimeoutMs", 2000)));
+                        lease = BundleLease.acquire(bundle.resolve(".in-progress"), timeout);
                     } catch (IOException failure) {
+                        failedOperation = operation; failedPath = operationPath;
                         throw new java.io.UncheckedIOException(failure);
                     }
                     phase = "WRITING";
+                    operation = "core-write"; operationPath = directory.relativize(bundle.resolve("core")).toString();
                     writeStarted = System.nanoTime();
                 }
 
                 @Override
                 public void afterWrite() throws IOException {
+                    if (!committed && failedOperation.isEmpty()) { failedOperation = operation; failedPath = operationPath; }
+                    operation = "lease-release"; operationPath = directory.relativize(bundle.resolve(".in-progress")).toString();
+                    IOException failure = null;
                     try {
-                        if (lock != null) lock.release();
-                    } finally {
-                        if (lease != null) lease.close();
+                        if (!committed && Files.isDirectory(bundle)) Files.write(bundle.resolve(".aborted"), new byte[] {1});
+                    } catch (IOException problem) { failure = problem; }
+                    finally {
+                        if (lease != null) try { lease.close(); }
+                        catch (IOException problem) { if (failure == null) failure = problem; else failure.addSuppressed(problem); }
                     }
-                    Files.deleteIfExists(bundle.resolve(".in-progress"));
+                    if (failure != null) throw failure;
                 }
 
                 @Override
                 public void commit(Path core) throws IOException {
+                    operation = "pending-write"; operationPath = directory.relativize(bundle.resolve("pending.bin")).toString();
                     writePulses(bundle, snapshot);
                     force(bundle);
                     writeNanos = System.nanoTime() - writeStarted;
                     phase = "COMMITTING";
                     long start = System.nanoTime();
+                    operation = "pointer-commit"; operationPath = "CURRENT/PREVIOUS";
                     commitBundle(bundle);
+                    committed = true;
                     lastValid = bundle.getFileName()
                         .toString();
                     commitNanos = System.nanoTime() - start;
+                    state.profileCheckpointCommit(commitNanos);
                     lastSuccessMillis = System.currentTimeMillis();
                     try {
                         cleanupBundles(bundle);
@@ -268,9 +348,7 @@ public final class WorldStore {
     /** Writer-only, after both durable pointer replacements. Never follows symlinks. */
     private void cleanupBundles(Path committed) throws IOException {
         Set<String> keep = new HashSet<>();
-        keep.add(
-            committed.getFileName()
-                .toString());
+        keep.add(committed.getFileName().toString());
         for (String pointer : new String[] { "CURRENT", "PREVIOUS" }) {
             Path path = directory.resolve(pointer);
             if (!Files.exists(path)) continue;
@@ -280,35 +358,31 @@ public final class WorldStore {
         }
         try (java.nio.file.DirectoryStream<Path> bundles = Files.newDirectoryStream(directory, "bundle-*")) {
             for (Path path : bundles) {
-                String name = path.getFileName()
-                    .toString();
+                String name = path.getFileName().toString();
                 if (!name.matches("bundle-[0-9a-f-]{36}") || keep.contains(name)
                     || !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) continue;
                 // Incomplete writes (including another operation's temporary payloads)
                 // are deliberately left alone. Completed crash orphans can be collected.
-                if (!Files.isRegularFile(path.resolve("core/manifest"), LinkOption.NOFOLLOW_LINKS)
+                boolean aborted = Files.isRegularFile(path.resolve(".aborted"), LinkOption.NOFOLLOW_LINKS);
+                if (!aborted && (!Files.isRegularFile(path.resolve("core/manifest"), LinkOption.NOFOLLOW_LINKS)
                     || !Files.isRegularFile(path.resolve("pending.bin"), LinkOption.NOFOLLOW_LINKS)
-                    || !Files.isRegularFile(path.resolve("pending.sha256"), LinkOption.NOFOLLOW_LINKS)) continue;
+                    || !Files.isRegularFile(path.resolve("pending.sha256"), LinkOption.NOFOLLOW_LINKS))) continue;
                 Path marker = path.resolve(".in-progress");
                 if (Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
                     if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)) continue;
                     // Process death releases the OS lock; a live writer's full payload
                     // must be protected even before CURRENT points to it.
-                    try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel
-                        .open(marker, java.nio.file.StandardOpenOption.WRITE)) {
+                    try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(marker,
+                        java.nio.file.StandardOpenOption.WRITE)) {
                         java.nio.channels.FileLock lease;
-                        try {
-                            lease = channel.tryLock();
-                        } catch (java.nio.channels.OverlappingFileLockException activeWriter) {
-                            continue;
-                        }
+                        try { lease = channel.tryLock(); }
+                        catch (java.nio.channels.OverlappingFileLockException activeWriter) { continue; }
                         if (lease == null) continue;
                         lease.release();
                     }
                 }
                 try (java.util.stream.Stream<Path> tree = Files.walk(path)) {
-                    Path[] ordered = tree.sorted(Comparator.reverseOrder())
-                        .toArray(Path[]::new);
+                    Path[] ordered = tree.sorted(Comparator.reverseOrder()).toArray(Path[]::new);
                     for (Path item : ordered) Files.deleteIfExists(item);
                 }
             }

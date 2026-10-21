@@ -795,8 +795,7 @@ public final class SmogGraph implements PartitionTarget {
             long total = 2L * stepActiveEdgeLimit;
             long begin = total * partIndex / parts, end = total * (partIndex + 1) / parts;
             balancedLoads((int) Math.min(begin, stepActiveEdgeLimit), (int) Math.min(end, stepActiveEdgeLimit));
-            balancedFluxes(
-                (int) Math.max(0, begin - stepActiveEdgeLimit),
+            balancedFluxes((int) Math.max(0, begin - stepActiveEdgeLimit),
                 (int) Math.max(0, end - stepActiveEdgeLimit));
         } else {
             exchangeRange(
@@ -1191,8 +1190,7 @@ public final class SmogGraph implements PartitionTarget {
 
     public int newNode(int seedPosition) {
         if (partCount != 0 && !appending) requireIdle();
-        if (appending && nodeSlots >= appendNodeEnd)
-            throw new IllegalStateException("Append node reservation exhausted");
+        if (appending && nodeSlots >= appendNodeEnd) throw new IllegalStateException("Append node reservation exhausted");
         int id;
         if (freeNodes.size != 0 && !appending) {
             id = freeNodes.pop();
@@ -1406,12 +1404,19 @@ public final class SmogGraph implements PartitionTarget {
         return nodeRequired;
     }
 
-    /**
-     * One array relocation per preparation unit, before commit. Existing values are copied
+    /** One array relocation per preparation unit, before commit. Existing values are copied
      * and the live reference is swapped immediately on the owner thread. Other arrays may
      * temporarily have more capacity; nodeSlots/edgeSlots and the solver view never grow here.
-     * This avoids allocating/copying every graph array in one atomic publication.
-     */
+     * This avoids allocating/copying every graph array in one atomic publication. */
+    long appendCapacityBytes() {
+        return 8L * (workState.length + (long)state.length + nodeLoad.length + delta.length
+            + boundary.length + sinkFactor.length + firstSinkLoss.length + eventAdds.length + eventRemoves.length
+            + mobility.length + coefficient.length + conductance.length)
+            + 4L * (seed.length + (long)adjacency.length + sinkSlot.length + volume.length + endpoints.length
+            + next.length + previous.length + edgeActiveSlot.length + activeEdges.data.length + sinkNodes.data.length)
+            + frozen.length + (long)eventMarked.length;
+    }
+
     boolean prepareAppendCapacity(int nodes, int edges) {
         if (nx != 0 || appending) throw new IllegalStateException("Sparse preparation only");
         int nr = Math.addExact(nodeSlots, partCount != 0 ? nodes : Math.max(0, nodes - freeNodes.size));
@@ -1420,115 +1425,47 @@ public final class SmogGraph implements PartitionTarget {
         if (nc > (Integer.MAX_VALUE - 8) / 3 || ec > (Integer.MAX_VALUE - 8) / 3)
             throw new IllegalStateException("Too many append slots");
         // Work first: beginning another step may swap the two mass buffers meanwhile.
-        if (workState.length < nr * 2) {
-            workState = Arrays.copyOf(workState, nc * 2);
-            return false;
-        }
-        if (state.length < nr * 2) {
-            state = Arrays.copyOf(state, nc * 2);
-            return false;
-        }
-        if (nodeLoad.length < nr) {
-            nodeLoad = Arrays.copyOf(nodeLoad, nc);
-            return false;
-        }
-        if (delta.length < nr) {
-            delta = Arrays.copyOf(delta, nc);
-            return false;
-        }
-        if (seed.length < nr) {
-            seed = Arrays.copyOf(seed, nc);
-            return false;
-        }
+        if (workState.length < nr * 2) { workState = Arrays.copyOf(workState, nc * 2); return false; }
+        if (state.length < nr * 2) { state = Arrays.copyOf(state, nc * 2); return false; }
+        if (nodeLoad.length < nr) { nodeLoad = Arrays.copyOf(nodeLoad, nc); return false; }
+        if (delta.length < nr) { delta = Arrays.copyOf(delta, nc); return false; }
+        if (seed.length < nr) { seed = Arrays.copyOf(seed, nc); return false; }
         if (adjacency.length < nr) {
-            int old = adjacency.length;
-            adjacency = Arrays.copyOf(adjacency, nc);
-            Arrays.fill(adjacency, old, nc, -1);
-            return false;
+            int old = adjacency.length; adjacency = Arrays.copyOf(adjacency, nc);
+            Arrays.fill(adjacency, old, nc, -1); return false;
         }
         if (sinkSlot.length < nr) {
-            int old = sinkSlot.length;
-            sinkSlot = Arrays.copyOf(sinkSlot, nc);
-            Arrays.fill(sinkSlot, old, nc, -1);
-            return false;
+            int old = sinkSlot.length; sinkSlot = Arrays.copyOf(sinkSlot, nc);
+            Arrays.fill(sinkSlot, old, nc, -1); return false;
         }
-        if (boundary.length < nr) {
-            boundary = Arrays.copyOf(boundary, nc);
-            return false;
-        }
-        if (sinkFactor.length < nr) {
-            sinkFactor = Arrays.copyOf(sinkFactor, nc);
-            return false;
-        }
-        if (frozen.length < nr) {
-            frozen = Arrays.copyOf(frozen, nc);
-            return false;
-        }
-        if (firstSinkLoss.length < nr) {
-            firstSinkLoss = Arrays.copyOf(firstSinkLoss, nc);
-            return false;
-        }
-        if (eventAdds.length < nr) {
-            eventAdds = Arrays.copyOf(eventAdds, nc);
-            return false;
-        }
-        if (eventRemoves.length < nr) {
-            eventRemoves = Arrays.copyOf(eventRemoves, nc);
-            return false;
-        }
-        if (eventMarked.length < nr) {
-            eventMarked = Arrays.copyOf(eventMarked, nc);
-            return false;
-        }
-        if (volume.length < nr) {
-            volume = Arrays.copyOf(volume, nc);
-            return false;
-        }
-        if (mobility.length < er) {
-            mobility = Arrays.copyOf(mobility, ec);
-            return false;
-        }
-        if (endpoints.length < er * 2) {
-            endpoints = Arrays.copyOf(endpoints, ec * 2);
-            return false;
-        }
-        if (next.length < er * 2) {
-            next = Arrays.copyOf(next, ec * 2);
-            return false;
-        }
-        if (previous.length < er * 2) {
-            previous = Arrays.copyOf(previous, ec * 2);
-            return false;
-        }
-        if (edgeActiveSlot.length < er) {
-            edgeActiveSlot = Arrays.copyOf(edgeActiveSlot, ec);
-            return false;
-        }
-        if (coefficient.length < er) {
-            coefficient = Arrays.copyOf(coefficient, ec);
-            return false;
-        }
-        if (conductance.length < er) {
-            conductance = Arrays.copyOf(conductance, ec);
-            return false;
-        }
+        if (boundary.length < nr) { boundary = Arrays.copyOf(boundary, nc); return false; }
+        if (sinkFactor.length < nr) { sinkFactor = Arrays.copyOf(sinkFactor, nc); return false; }
+        if (frozen.length < nr) { frozen = Arrays.copyOf(frozen, nc); return false; }
+        if (firstSinkLoss.length < nr) { firstSinkLoss = Arrays.copyOf(firstSinkLoss, nc); return false; }
+        if (eventAdds.length < nr) { eventAdds = Arrays.copyOf(eventAdds, nc); return false; }
+        if (eventRemoves.length < nr) { eventRemoves = Arrays.copyOf(eventRemoves, nc); return false; }
+        if (eventMarked.length < nr) { eventMarked = Arrays.copyOf(eventMarked, nc); return false; }
+        if (volume.length < nr) { volume = Arrays.copyOf(volume, nc); return false; }
+        if (mobility.length < er) { mobility = Arrays.copyOf(mobility, ec); return false; }
+        if (endpoints.length < er * 2) { endpoints = Arrays.copyOf(endpoints, ec * 2); return false; }
+        if (next.length < er * 2) { next = Arrays.copyOf(next, ec * 2); return false; }
+        if (previous.length < er * 2) { previous = Arrays.copyOf(previous, ec * 2); return false; }
+        if (edgeActiveSlot.length < er) { edgeActiveSlot = Arrays.copyOf(edgeActiveSlot, ec); return false; }
+        if (coefficient.length < er) { coefficient = Arrays.copyOf(coefficient, ec); return false; }
+        if (conductance.length < er) { conductance = Arrays.copyOf(conductance, ec); return false; }
         int ar = Math.addExact(activeEdges.size, edges), sr = Math.addExact(sinkNodes.size, nodes);
         if (activeEdges.data.length < ar) {
-            activeEdges.data = Arrays.copyOf(activeEdges.data, IntList.capacity(activeEdges.data.length, ar));
-            return false;
+            activeEdges.data = Arrays.copyOf(activeEdges.data, IntList.capacity(activeEdges.data.length, ar)); return false;
         }
         if (sinkNodes.data.length < sr) {
-            sinkNodes.data = Arrays.copyOf(sinkNodes.data, IntList.capacity(sinkNodes.data.length, sr));
-            return false;
+            sinkNodes.data = Arrays.copyOf(sinkNodes.data, IntList.capacity(sinkNodes.data.length, sr)); return false;
         }
         return true;
     }
 
-    /**
-     * Narrow, owner-thread append scope; reserve everything before publishing any node.
+    /** Narrow, owner-thread append scope; reserve everything before publishing any node.
      * Existing nodes, sources, coefficients and the active/sink prefixes stay immutable.
-     * No free IDs are reused, even on an idle boundary, within this scope.
-     */
+     * No free IDs are reused, even on an idle boundary, within this scope. */
     int beginAppendBatch(int nodes, int edges) {
         if (appending || nx != 0 || law != SmogConfig.QUADRATIC_FAST || nodes < 0 || edges < 0)
             throw new IllegalStateException("Unsupported append scope");
@@ -1544,17 +1481,10 @@ public final class SmogGraph implements PartitionTarget {
         }
     }
 
-    void endAppendBatch() {
-        appending = false;
-    }
+    void endAppendBatch() { appending = false; }
 
-    long solverEpoch() {
-        return solverEpoch;
-    }
-
-    int pendingSolverNodes() {
-        return partCount == 0 ? 0 : nodeSlots - stepNodeLimit;
-    }
+    long solverEpoch() { return solverEpoch; }
+    int pendingSolverNodes() { return partCount == 0 ? 0 : nodeSlots - stepNodeLimit; }
 
     private void requireMutableNode(int id) {
         if (appending && (id < appendNodeStart || id >= nodeSlots))
@@ -1572,9 +1502,7 @@ public final class SmogGraph implements PartitionTarget {
                 + previous.length
                 + edgeActiveSlot.length
                 + activeEdges.data.length
-                + sinkNodes.data.length
-                + freeNodes.data.length
-                + freeEdges.data.length)
+                + sinkNodes.data.length + freeNodes.data.length + freeEdges.data.length)
             + 8L * (state.length + boundary.length
                 + sinkFactor.length
                 + conductance.length
@@ -1582,12 +1510,8 @@ public final class SmogGraph implements PartitionTarget {
                 + workState.length
                 + nodeLoad.length
                 + delta.length
-                + mobility.length
-                + firstSinkLoss.length
-                + eventAdds.length
-                + eventRemoves.length)
-            + frozen.length
-            + eventMarked.length;
+                + mobility.length + firstSinkLoss.length + eventAdds.length + eventRemoves.length)
+            + frozen.length + eventMarked.length;
     }
 
     private void ensureEdges(int required) {

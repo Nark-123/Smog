@@ -26,6 +26,13 @@ final class RecordCodec {
 
     static final int MAX = 1024 * 1024;
 
+    /** Verified malformed bytes, distinct from a device/access IOException while reading. */
+    static final class InvalidRecord extends IOException {
+        private static final long serialVersionUID = 1L;
+        InvalidRecord(String message) { super(message); }
+        InvalidRecord(String message, Throwable cause) { super(message, cause); }
+    }
+
     static void write(DataOutput out, byte[] raw) throws IOException {
         if (raw.length > MAX) throw new IOException("Record too large");
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -66,7 +73,7 @@ final class RecordCodec {
 
     private static byte[] readBody(DataInput in, int length, int coded, int expected) throws IOException {
         if (length < 0 || length > MAX || coded < 1 || coded > MAX + 1024)
-            throw new IOException("Invalid record bounds");
+            throw new InvalidRecord("Invalid record bounds");
         byte[] bytes = new byte[coded];
         in.readFully(bytes);
         byte[] raw = new byte[length];
@@ -76,20 +83,20 @@ final class RecordCodec {
             int offset = 0;
             while (offset < raw.length) {
                 int n = inflater.inflate(raw, offset, raw.length - offset);
-                if (n == 0) throw new IOException("Incomplete compressed record");
+                if (n == 0) throw new InvalidRecord("Incomplete compressed record");
                 offset += n;
             }
             byte[] extra = new byte[1];
             if (inflater.inflate(extra) != 0 || !inflater.finished() || inflater.getRemaining() != 0)
-                throw new IOException("Trailing compressed record");
+                throw new InvalidRecord("Trailing compressed record");
         } catch (DataFormatException e) {
-            throw new IOException("Invalid compression", e);
+            throw new InvalidRecord("Invalid compression", e);
         } finally {
             inflater.end();
         }
         CRC32 crc = new CRC32();
         crc.update(raw);
-        if ((int) crc.getValue() != expected) throw new IOException("Record checksum mismatch");
+        if ((int) crc.getValue() != expected) throw new InvalidRecord("Record checksum mismatch");
         return raw;
     }
 

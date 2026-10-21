@@ -7,14 +7,17 @@ import java.util.Arrays;
  */
 final class EdgeAccumulator {
 
-    // zero is unused; a < b, so a pair cannot be zero
-    private long[] keys = new long[32];
+    static final int[] EMPTY_RECORDS = new int[0];
+    private static final long[] EMPTY_KEYS = new long[0];
 
-    private int[] areas = new int[32], distances = new int[32];
+    // zero is unused; a < b, so a pair cannot be zero
+    private long[] keys = EMPTY_KEYS;
+
+    private int[] areas = EMPTY_RECORDS, distances = EMPTY_RECORDS;
 
     private int size;
 
-    private long[] ordered = new long[16];
+    private long[] ordered = EMPTY_KEYS;
 
     void clear() {
         Arrays.fill(keys, 0);
@@ -26,6 +29,7 @@ final class EdgeAccumulator {
         if (source == this) {
             return;
         }
+        if (source.size == 0) { clear(); return; }
         if (keys.length < source.keys.length) {
             keys = new long[source.keys.length];
             areas = new int[source.keys.length];
@@ -65,6 +69,9 @@ final class EdgeAccumulator {
             b = t;
         }
         long key = ((long) a << 32) | (b & 0xffffffffL);
+        if (keys.length == 0) {
+            keys = new long[32]; areas = new int[32]; distances = new int[32];
+        }
         if ((size + 1) * 2 >= keys.length) {
             grow();
         }
@@ -86,6 +93,7 @@ final class EdgeAccumulator {
 
     /** Stable local IDs, area and minimum distance; never serialized conductance/runtime IDs. */
     int[] records() {
+        if (size == 0) return EMPTY_RECORDS;
         int[] result = new int[size * 4];
         long[] sorted = new long[size];
         int n = 0;
