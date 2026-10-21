@@ -28,9 +28,16 @@ final class RecordCodec {
 
     /** Verified malformed bytes, distinct from a device/access IOException while reading. */
     static final class InvalidRecord extends IOException {
+
         private static final long serialVersionUID = 1L;
-        InvalidRecord(String message) { super(message); }
-        InvalidRecord(String message, Throwable cause) { super(message, cause); }
+
+        InvalidRecord(String message) {
+            super(message);
+        }
+
+        InvalidRecord(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     static void write(DataOutput out, byte[] raw) throws IOException {

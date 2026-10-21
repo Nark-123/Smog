@@ -39,7 +39,6 @@ final class CellBuild {
     EpochBuildAppend epochAppend;
     long solverWaitStarted;
 
-
     private final Partitioner partitioner;
 
     private final BlockPos origin;
@@ -122,8 +121,8 @@ final class CellBuild {
 
     void advance() {
         diagnosticUnits = stage == 0 ? (cursor < keys.length ? 1 : 0)
-            : stage == 1 ? Math.min(32, 1728 - cursor) : stage == 3 ? Math.min(32, 512 - cursor)
-            : stage == 4 ? Math.min(16, 64 - cursor) : 0;
+            : stage == 1 ? Math.min(32, 1728 - cursor)
+                : stage == 3 ? Math.min(32, 512 - cursor) : stage == 4 ? Math.min(16, 64 - cursor) : 0;
         switch (stage) {
             case 0:
                 if (cursor < keys.length) {
@@ -241,8 +240,12 @@ final class CellBuild {
             return new GeometryPack(cell.key, geometry, local.seeds, boundary, internalEdges.records(), snapshots);
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.PACK); throw failure;
-        } finally { state.profile.end(ProfilerCounters.PACK, profileStart, profileFailed ? 0 : geometry.volumes.length); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.PACK);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.PACK, profileStart, profileFailed ? 0 : geometry.volumes.length);
+        }
     }
 
     boolean validWorld() {

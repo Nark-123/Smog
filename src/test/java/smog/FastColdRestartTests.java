@@ -240,19 +240,25 @@ public final class FastColdRestartTests {
         options(false, false, true);
         SparseTests.World w = world();
         Checkpoint.Data d = new Checkpoint.Data();
-        d.config = CONFIG; d.parts = 20; d.dimension = 0;
-        for (int x=0;x<3000;x++) {
-            CubeKey k=new CubeKey(0,x,0,0); w.put(k,SparseTests.air(),1,1);
-            Checkpoint.CellData c=new Checkpoint.CellData(); c.key=new CellKey(0,x*2,0,0);
-            c.mass=new DimensionState.MassRecord(new int[512],new int[]{512},new double[]{10});
-            d.cells.add(c); d.injected+=10;
+        d.config = CONFIG;
+        d.parts = 20;
+        d.dimension = 0;
+        for (int x = 0; x < 3000; x++) {
+            CubeKey k = new CubeKey(0, x, 0, 0);
+            w.put(k, SparseTests.air(), 1, 1);
+            Checkpoint.CellData c = new Checkpoint.CellData();
+            c.key = new CellKey(0, x * 2, 0, 0);
+            c.mass = new DimensionState.MassRecord(new int[512], new int[] { 512 }, new double[] { 10 });
+            d.cells.add(c);
+            d.injected += 10;
         }
-        try(DimensionState s=Checkpoint.restore(d,w)) {
-            s.resumeReadyCubes(); s.setSourceRate(new BlockPos(0,1,1,1),3);
-            for(int i=0;i<61;i++) s.tick(1000000,20,false,1000000);
-            check(s.iteration()>0,"Restoration paused law4");
-            check(s.gameTicks()==61,"Restore changed physical clock");
-            near(s.balanceError(),0,"Continuous restore ledger");
+        try (DimensionState s = Checkpoint.restore(d, w)) {
+            s.resumeReadyCubes();
+            s.setSourceRate(new BlockPos(0, 1, 1, 1), 3);
+            for (int i = 0; i < 61; i++) s.tick(1000000, 20, false, 1000000);
+            check(s.iteration() > 0, "Restoration paused law4");
+            check(s.gameTicks() == 61, "Restore changed physical clock");
+            near(s.balanceError(), 0, "Continuous restore ledger");
         }
     }
 

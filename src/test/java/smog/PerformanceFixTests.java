@@ -102,8 +102,9 @@ public final class PerformanceFixTests {
                 state.cubes.put(extra, new DimensionState.CubeRecord(extra));
             }
             long captureDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-            do { state.geometry(100000L); }
-            while ("REQUESTED".equals(state.checkpointPhase()) && System.nanoTime() < captureDeadline);
+            do {
+                state.geometry(100000L);
+            } while ("REQUESTED".equals(state.checkpointPhase()) && System.nanoTime() < captureDeadline);
             check("CAPTURING".equals(state.checkpointPhase()), "Expected incremental capture");
             long cutTicks = state.gameTicks();
             double cutGenerated = state.generatedMass();

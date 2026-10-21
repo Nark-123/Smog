@@ -57,10 +57,18 @@ final class GeometryCache implements AutoCloseable {
         int version;
     }
 
-    interface RegionReader { RandomAccessFile open(Path path) throws IOException; }
+    interface RegionReader {
+
+        RandomAccessFile open(Path path) throws IOException;
+    }
+
     private final RegionReader reader;
     private ProfilerCounters profile;
-    void profile(ProfilerCounters profile) { this.profile = profile; }
+
+    void profile(ProfilerCounters profile) {
+        this.profile = profile;
+    }
+
     private final Path directory;
     private final int dimension;
     private final byte[] config;
@@ -76,20 +84,27 @@ final class GeometryCache implements AutoCloseable {
     private final LinkedHashMap<CubeKey, Lookup> decoded = new LinkedHashMap<>(16, .75f, true);
     private final LinkedHashMap<CubeKey, CompletableFuture<Lookup>> reads = new LinkedHashMap<>();
     private long memory;
+
     private static final class PendingRegion {
+
         final Map<CellKey, GeometryPack> updates = new LinkedHashMap<>();
         long generation, firstQueued = System.nanoTime(), retryAfter;
         int failures;
     }
+
     private static final class Barrier {
+
         final Map<CubeKey, Long> targets = new HashMap<>();
         final CompletableFuture<Void> future = new CompletableFuture<>();
     }
+
     private static final class Memo {
+
         Map<CellKey, GeometryPack> cells;
         java.nio.file.attribute.BasicFileAttributes identity;
         long bytes;
     }
+
     private final Map<CubeKey, PendingRegion> pending = new LinkedHashMap<>();
     private final List<Barrier> barriers = new ArrayList<>();
     private PendingRegion activeWrite;
@@ -109,7 +124,8 @@ final class GeometryCache implements AutoCloseable {
     private volatile long readQueueNanos, maxReadQueueNanos, readRequests, coalesced, retries;
     private volatile long rewriteReadNanos, encodeWriteNanos, atomicReplaceNanos, memoReuses;
     private volatile boolean flushFailed;
-    private volatile long writeRegions, writeCells, writeUpdates, writeBytes, rewriteReadBytes, writeNanos, maxWriteNanos;
+    private volatile long writeRegions, writeCells, writeUpdates, writeBytes, rewriteReadBytes, writeNanos,
+        maxWriteNanos;
     private final Map<CubeKey, Integer> knownEntries = new HashMap<>(); // I/O thread only
 
     private void noteEntries(CubeKey key, int count) {
@@ -150,7 +166,9 @@ final class GeometryCache implements AutoCloseable {
             long enqueued = System.nanoTime();
             pending = CompletableFuture.supplyAsync(() -> {
                 long wait = System.nanoTime() - enqueued;
-                readQueueNanos += wait; maxReadQueueNanos = Math.max(maxReadQueueNanos, wait); readRequests++;
+                readQueueNanos += wait;
+                maxReadQueueNanos = Math.max(maxReadQueueNanos, wait);
+                readRequests++;
                 if (profile != null) profile.record(ProfilerCounters.READ_QUEUE, wait, 1);
                 return read(cube);
             }, io);
@@ -271,9 +289,16 @@ final class GeometryCache implements AutoCloseable {
             PendingRegion group = pending.get(key);
             GeometryPack replaced = group == null ? null : group.updates.get(pack.key);
             long extra = pack.bytes() - (replaced == null ? 0 : replaced.bytes());
-            if (closed || pendingBytes + extra > limit) { dropped++; return; }
-            if (group == null) { group = new PendingRegion(); pending.put(key, group); }
-            group.updates.put(pack.key, pack); group.generation = ++nextGeneration;
+            if (closed || pendingBytes + extra > limit) {
+                dropped++;
+                return;
+            }
+            if (group == null) {
+                group = new PendingRegion();
+                pending.put(key, group);
+            }
+            group.updates.put(pack.key, pack);
+            group.generation = ++nextGeneration;
             pendingBytes += extra;
             if (replaced != null) coalesced++;
             scheduleDrain(200000000L, false);
@@ -292,12 +317,18 @@ final class GeometryCache implements AutoCloseable {
         CubeKey key = null;
         PendingRegion update = null;
         synchronized (pending) {
-            draining = true; delayedDrain = null;
+            draining = true;
+            delayedDrain = null;
             long now = System.nanoTime(), next = Long.MAX_VALUE;
             boolean urgent = closed || !barriers.isEmpty();
             for (Map.Entry<CubeKey, PendingRegion> e : pending.entrySet()) {
-                long due = Math.max(e.getValue().retryAfter, urgent ? 0 : lastWrites.getOrDefault(e.getKey(), 0L) + 200000000L);
-                if (due <= now) { key = e.getKey(); update = e.getValue(); break; }
+                long due = Math
+                    .max(e.getValue().retryAfter, urgent ? 0 : lastWrites.getOrDefault(e.getKey(), 0L) + 200000000L);
+                if (due <= now) {
+                    key = e.getKey();
+                    update = e.getValue();
+                    break;
+                }
                 next = Math.min(next, due - now);
             }
             if (update == null) {
@@ -305,7 +336,9 @@ final class GeometryCache implements AutoCloseable {
                 if (!pending.isEmpty()) scheduleDrain(next, false);
                 return;
             }
-            pending.remove(key); activeKey = key; activeWrite = update;
+            pending.remove(key);
+            activeKey = key;
+            activeWrite = update;
         }
         boolean success = false;
         IOException failure = null;
@@ -325,27 +358,33 @@ final class GeometryCache implements AutoCloseable {
             encodeWriteNanos += profileEncodeNanos;
             if (profile != null) profile.record(ProfilerCounters.CACHE_ENCODE, profileEncodeNanos, all.size());
             remember(key, all);
-            writeRegions++; writeCells += all.size(); writeUpdates += update.updates.size();
-            writeBytes += Files.size(file(key)); rewriteReadBytes += memoReuses == reuseBefore ? previousBytes : 0;
+            writeRegions++;
+            writeCells += all.size();
+            writeUpdates += update.updates.size();
+            writeBytes += Files.size(file(key));
+            rewriteReadBytes += memoReuses == reuseBefore ? previousBytes : 0;
             long nanos = System.nanoTime() - start;
-            writeNanos += nanos; maxWriteNanos = Math.max(maxWriteNanos, nanos);
+            writeNanos += nanos;
+            maxWriteNanos = Math.max(maxWriteNanos, nanos);
             if (profile != null) {
                 profile.record(ProfilerCounters.CACHE_WRITE, nanos, all.size());
                 profile.detail(ProfilerCounters.CACHE_WRITE, update.updates.size(), all.size());
                 profile.batch(ProfilerCounters.CACHE_WRITE, all.size());
                 profile.flush(-1, start + nanos, false);
             }
-            lastWrites.put(key, System.nanoTime()); success = true;
+            lastWrites.put(key, System.nanoTime());
+            success = true;
         } catch (IOException | RuntimeException problem) {
-            failure = problem instanceof IOException ? (IOException)problem : new IOException(problem);
+            failure = problem instanceof IOException ? (IOException) problem : new IOException(problem);
             writeFailures++;
             if (profile != null) {
                 profile.count(ProfilerCounters.CACHE_WRITE, 0);
                 profile.failure(ProfilerCounters.CACHE_WRITE);
                 profile.reason(ProfilerCounters.IO_ERROR, 0);
             }
-            System.err.println("SMOG GeometryCache operation=rewrite timestamp=" + java.time.Instant.now()
-                + " dimension=" + dimension + " path=" + file(key) + " attempt=" + (update.failures + 1));
+            System.err.println(
+                "SMOG GeometryCache operation=rewrite timestamp=" + java.time.Instant
+                    .now() + " dimension=" + dimension + " path=" + file(key) + " attempt=" + (update.failures + 1));
             failure.printStackTrace(System.err);
         } finally {
             synchronized (pending) {
@@ -354,23 +393,42 @@ final class GeometryCache implements AutoCloseable {
                     retries++;
                     update.retryAfter = System.nanoTime() + (200000000L << (update.failures - 1));
                     PendingRegion newer = pending.get(key);
-                    if (newer == null) { pending.put(key, update); for (GeometryPack p : update.updates.values()) pendingBytes += p.bytes(); }
-                    else {
-                        newer.failures = Math.max(newer.failures, update.failures); newer.retryAfter = update.retryAfter;
+                    if (newer == null) {
+                        pending.put(key, update);
+                        for (GeometryPack p : update.updates.values()) pendingBytes += p.bytes();
+                    } else {
+                        newer.failures = Math.max(newer.failures, update.failures);
+                        newer.retryAfter = update.retryAfter;
                         for (GeometryPack p : update.updates.values()) if (!newer.updates.containsKey(p.key)) {
-                            if (pendingBytes + p.bytes() <= limit) { newer.updates.put(p.key, p); pendingBytes += p.bytes(); }
-                            else { dropped++; lostWrite = failure; }
+                            if (pendingBytes + p.bytes() <= limit) {
+                                newer.updates.put(p.key, p);
+                                pendingBytes += p.bytes();
+                            } else {
+                                dropped++;
+                                lostWrite = failure;
+                            }
                         }
                     }
-                } else if (!success) { lostWrite = failure; flushFailed = true; dropped += update.updates.size(); }
+                } else if (!success) {
+                    lostWrite = failure;
+                    flushFailed = true;
+                    dropped += update.updates.size();
+                }
                 for (Iterator<Barrier> it = barriers.iterator(); it.hasNext();) {
                     Barrier barrier = it.next();
                     Long target = barrier.targets.get(key);
                     if (success && target != null && target <= update.generation) barrier.targets.remove(key);
-                    if (lostWrite != null) { barrier.future.completeExceptionally(lostWrite); it.remove(); }
-                    else if (barrier.targets.isEmpty()) { barrier.future.complete(null); it.remove(); }
+                    if (lostWrite != null) {
+                        barrier.future.completeExceptionally(lostWrite);
+                        it.remove();
+                    } else if (barrier.targets.isEmpty()) {
+                        barrier.future.complete(null);
+                        it.remove();
+                    }
                 }
-                activeKey = null; activeWrite = null; draining = scheduled = false;
+                activeKey = null;
+                activeWrite = null;
+                draining = scheduled = false;
                 if (!pending.isEmpty()) scheduleDrain(0, false);
             }
         }
@@ -378,19 +436,33 @@ final class GeometryCache implements AutoCloseable {
 
     private static boolean sameFile(java.nio.file.attribute.BasicFileAttributes a,
         java.nio.file.attribute.BasicFileAttributes b) {
-        return a != null && b != null && a.fileKey() != null && b.fileKey() != null
+        return a != null && b != null
+            && a.fileKey() != null
+            && b.fileKey() != null
             && java.util.Objects.equals(a.fileKey(), b.fileKey())
-            && a.size() == b.size() && a.lastModifiedTime().equals(b.lastModifiedTime())
-            && a.creationTime().equals(b.creationTime());
+            && a.size() == b.size()
+            && a.lastModifiedTime()
+                .equals(b.lastModifiedTime())
+            && a.creationTime()
+                .equals(b.creationTime());
     }
+
     private void remember(CubeKey key, Map<CellKey, GeometryPack> cells) throws IOException {
-        Memo memo = new Memo(); memo.cells = Collections.unmodifiableMap(new LinkedHashMap<>(cells));
+        Memo memo = new Memo();
+        memo.cells = Collections.unmodifiableMap(new LinkedHashMap<>(cells));
         memo.identity = Files.readAttributes(file(key), java.nio.file.attribute.BasicFileAttributes.class);
         for (GeometryPack pack : cells.values()) memo.bytes += pack.bytes();
-        Memo old = written.remove(key); if (old != null) writtenBytes -= old.bytes;
-        if (memo.bytes <= limit / 4) { written.put(key, memo); writtenBytes += memo.bytes; }
+        Memo old = written.remove(key);
+        if (old != null) writtenBytes -= old.bytes;
+        if (memo.bytes <= limit / 4) {
+            written.put(key, memo);
+            writtenBytes += memo.bytes;
+        }
         while (writtenBytes > limit / 4 && !written.isEmpty()) {
-            Iterator<Memo> it = written.values().iterator(); writtenBytes -= it.next().bytes; it.remove();
+            Iterator<Memo> it = written.values()
+                .iterator();
+            writtenBytes -= it.next().bytes;
+            it.remove();
         }
     }
 
@@ -398,18 +470,27 @@ final class GeometryCache implements AutoCloseable {
         Map<CellKey, GeometryPack> result = new LinkedHashMap<>();
         Path path = file(key);
         java.nio.file.attribute.BasicFileAttributes identity;
-        try { identity = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class); }
-        catch (java.nio.file.NoSuchFileException missing) { return result; }
+        try {
+            identity = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class);
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return result;
+        }
         Memo memo = written.get(key);
         if (memo != null && sameFile(memo.identity, identity)) {
-            memoReuses++; return new LinkedHashMap<>(memo.cells);
+            memoReuses++;
+            return new LinkedHashMap<>(memo.cells);
         }
-        if (memo != null) { written.remove(key); writtenBytes -= memo.bytes; }
+        if (memo != null) {
+            written.remove(key);
+            writtenBytes -= memo.bytes;
+        }
         try (RandomAccessFile in = reader.open(path)) {
             for (Index entry : index(in, key)) result.putAll(readCube(in, entry, null));
         } catch (InvalidPack | RecordCodec.InvalidRecord | java.io.EOFException | ConfigMismatch invalid) {
             result.clear();
-        } catch (RuntimeException invalid) { result.clear(); }
+        } catch (RuntimeException invalid) {
+            result.clear();
+        }
         // Other IOExceptions are device/access failures: propagate, retain the old atomic file.
         return result;
     }
@@ -442,30 +523,46 @@ final class GeometryCache implements AutoCloseable {
             result.status = Status.MISS;
             if (!Files.notExists(path)) {
                 readFailures++;
-                System.err.println("SMOG GeometryCache operation=read timestamp=" + java.time.Instant.now()
-                    + " dimension=" + dimension + " path=" + path);
+                System.err.println(
+                    "SMOG GeometryCache operation=read timestamp=" + java.time.Instant
+                        .now() + " dimension=" + dimension + " path=" + path);
                 unavailable.printStackTrace(System.err);
             }
-        } catch (RuntimeException invalid) { result.status = Status.CORRUPT; }
+        } catch (RuntimeException invalid) {
+            result.status = Status.CORRUPT;
+        }
         long profileNow = System.nanoTime();
         result.readNanos = profileNow - start - result.decompressNanos - result.decodeNanos;
         if (profile != null) {
             profile.record(ProfilerCounters.CACHE_READ, result.readNanos, result.bytes);
-            if (result.decompressNanos > 0) profile.record(ProfilerCounters.CACHE_DECOMPRESS, result.decompressNanos, result.bytes);
-            if (result.decodeNanos > 0) profile.record(ProfilerCounters.CACHE_DECODE, result.decodeNanos, result.cells.size());
-            profile.reason(readFailures != failuresBefore ? ProfilerCounters.IO_ERROR
-                : result.status == Status.OK ? ProfilerCounters.CACHE_HIT
-                : result.status == Status.CORRUPT ? ProfilerCounters.CORRUPT
-                : result.status == Status.CONFIG ? ProfilerCounters.CONFIG : ProfilerCounters.CACHE_MISS, 0);
+            if (result.decompressNanos > 0)
+                profile.record(ProfilerCounters.CACHE_DECOMPRESS, result.decompressNanos, result.bytes);
+            if (result.decodeNanos > 0)
+                profile.record(ProfilerCounters.CACHE_DECODE, result.decodeNanos, result.cells.size());
+            profile
+                .reason(
+                    readFailures != failuresBefore ? ProfilerCounters.IO_ERROR
+                        : result.status == Status.OK ? ProfilerCounters.CACHE_HIT
+                            : result.status == Status.CORRUPT ? ProfilerCounters.CORRUPT
+                                : result.status == Status.CONFIG ? ProfilerCounters.CONFIG
+                                    : ProfilerCounters.CACHE_MISS,
+                    0);
             profile.flush(-1, profileNow, false);
         }
         return result;
     }
 
     private static final class InvalidPack extends IOException {
+
         private static final long serialVersionUID = 1L;
-        InvalidPack(String message) { super(message); }
-        InvalidPack(Throwable cause) { super("Invalid decoded GeometryPack", cause); }
+
+        InvalidPack(String message) {
+            super(message);
+        }
+
+        InvalidPack(Throwable cause) {
+            super("Invalid decoded GeometryPack", cause);
+        }
     }
 
     private static final class ConfigMismatch extends IOException {
@@ -541,7 +638,9 @@ final class GeometryCache implements AutoCloseable {
                     throw new IOException("GeometryPack duplicate/coordinate mismatch");
             }
             if (data.read() != -1) throw new IOException("GeometryPack trailing bytes");
-        } catch (IOException | RuntimeException invalid) { throw new InvalidPack(invalid); }
+        } catch (IOException | RuntimeException invalid) {
+            throw new InvalidPack(invalid);
+        }
         if (stats != null) stats.decodeNanos += System.nanoTime() - decodeStart;
         return result;
     }
@@ -617,19 +716,30 @@ final class GeometryCache implements AutoCloseable {
 
     CompletableFuture<Void> flush() {
         synchronized (pending) {
-            if (lostWrite != null) { CompletableFuture<Void> failed = new CompletableFuture<>(); failed.completeExceptionally(lostWrite); return failed; }
+            if (lostWrite != null) {
+                CompletableFuture<Void> failed = new CompletableFuture<>();
+                failed.completeExceptionally(lostWrite);
+                return failed;
+            }
             Barrier barrier = new Barrier();
-            for (Map.Entry<CubeKey, PendingRegion> e : pending.entrySet()) barrier.targets.put(e.getKey(), e.getValue().generation);
+            for (Map.Entry<CubeKey, PendingRegion> e : pending.entrySet())
+                barrier.targets.put(e.getKey(), e.getValue().generation);
             if (activeWrite != null) barrier.targets.merge(activeKey, activeWrite.generation, Math::max);
             if (barrier.targets.isEmpty()) barrier.future.complete(null);
-            else { barriers.add(barrier); scheduleDrain(0, true); }
+            else {
+                barriers.add(barrier);
+                scheduleDrain(0, true);
+            }
             return barrier.future;
         }
     }
 
     @Override
     public void close() {
-        synchronized (pending) { if (closed) return; closed = true; }
+        synchronized (pending) {
+            if (closed) return;
+            closed = true;
+        }
         CompletableFuture<Void> flushed = flush();
         try {
             long timeout = RestartOptions.millis("smog.geometryShutdownMs", 2000, 0, 10000);
@@ -640,14 +750,31 @@ final class GeometryCache implements AutoCloseable {
             if (!io.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS))
                 throw new java.util.concurrent.TimeoutException("IO worker did not terminate");
         } catch (java.util.concurrent.TimeoutException timeout) {
-            shutdownTimedOut = true; flushFailed = true;
-            System.err.println("SMOG GeometryCache operation=close dimension=" + dimension + " path=" + directory + " flush timed out");
+            shutdownTimedOut = true;
+            flushFailed = true;
+            System.err.println(
+                "SMOG GeometryCache operation=close dimension=" + dimension
+                    + " path="
+                    + directory
+                    + " flush timed out");
         } catch (java.util.concurrent.ExecutionException failure) {
             flushFailed = true;
-            System.err.println("SMOG GeometryCache operation=close dimension=" + dimension + " path=" + directory + " flush FAILED: " + failure.getCause());
+            System.err.println(
+                "SMOG GeometryCache operation=close dimension=" + dimension
+                    + " path="
+                    + directory
+                    + " flush FAILED: "
+                    + failure.getCause());
         } catch (InterruptedException interrupted) {
-            shutdownTimedOut = true; flushFailed = true; Thread.currentThread().interrupt();
-        } finally { io.shutdownNow(); }
-        decoded.clear(); reads.clear(); memory = 0;
+            shutdownTimedOut = true;
+            flushFailed = true;
+            Thread.currentThread()
+                .interrupt();
+        } finally {
+            io.shutdownNow();
+        }
+        decoded.clear();
+        reads.clear();
+        memory = 0;
     }
 }

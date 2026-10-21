@@ -766,8 +766,9 @@ final class Checkpoint {
 
     static DimensionState restore(Data d, WorldSnapshotProvider provider) {
         DimensionState s = new DimensionState(d.dimension, d.config, provider);
-        s.profile.checkpoint(d.cells.isEmpty() ? ProfilerCounters.CheckpointStatus.EMPTY
-            : ProfilerCounters.CheckpointStatus.LOADED, false);
+        s.profile.checkpoint(
+            d.cells.isEmpty() ? ProfilerCounters.CheckpointStatus.EMPTY : ProfilerCounters.CheckpointStatus.LOADED,
+            false);
         s.profile.checkpointInfo(d.cells.size(), d.bytes, d.formatVersion);
         s.ticks = d.ticks;
         s.steps = d.steps;

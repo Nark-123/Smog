@@ -17,12 +17,12 @@ import org.smogmod.persistence.WorldStore;
 
 import cpw.mods.fml.common.FMLLog;
 import smog.BlockPos;
-import smog.ProfilerCounters;
-import smog.ProfileFileLog;
 import smog.CubeKey;
 import smog.DimensionState;
 import smog.GeometryMetrics;
 import smog.ImmutableCubeSnapshot;
+import smog.ProfileFileLog;
+import smog.ProfilerCounters;
 import smog.SpatialQueries;
 import smog.WorldAdapters;
 
@@ -115,10 +115,15 @@ public final class WorldRuntime implements AutoCloseable {
                 .getWorldDirectory()
                 .toPath()
                 .resolve("data/smog/dimension_" + world.provider.dimensionId));
-        profileFileLog = new ProfileFileLog(world.getSaveHandler().getWorldDirectory().toPath()
-            .resolve("data/smog/diagnostics"), world.provider.dimensionId);
-        try { state = store.load(world.provider.dimensionId, provider, pending); }
-        catch (Exception failure) {
+        profileFileLog = new ProfileFileLog(
+            world.getSaveHandler()
+                .getWorldDirectory()
+                .toPath()
+                .resolve("data/smog/diagnostics"),
+            world.provider.dimensionId);
+        try {
+            state = store.load(world.provider.dimensionId, provider, pending);
+        } catch (Exception failure) {
             ProfilerCounters startup = new ProfilerCounters(world.provider.dimensionId);
             startup.attach(profileFileLog);
             startup.checkpoint(ProfilerCounters.CheckpointStatus.FAILED, false);
@@ -162,8 +167,12 @@ public final class WorldRuntime implements AutoCloseable {
             }
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.PULSE_ACCEPT); throw failure;
-        } finally { state.profile.end(ProfilerCounters.PULSE_ACCEPT, profileStart, profileFailed ? 0 : 1); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.PULSE_ACCEPT);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.PULSE_ACCEPT, profileStart, profileFailed ? 0 : 1);
+        }
     }
 
     public void load(Chunk chunk) {
@@ -175,8 +184,12 @@ public final class WorldRuntime implements AutoCloseable {
             WorldAdapters.columnReady(state, chunk.xPosition, chunk.zPosition);
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.CHUNK_LOAD); throw failure;
-        } finally { state.profile.end(ProfilerCounters.CHUNK_LOAD, profileStart, profileFailed ? 0 : 1); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.CHUNK_LOAD);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.CHUNK_LOAD, profileStart, profileFailed ? 0 : 1);
+        }
     }
 
     public void unload(Chunk chunk) {
@@ -191,8 +204,12 @@ public final class WorldRuntime implements AutoCloseable {
             }
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.CHUNK_UNLOAD); throw failure;
-        } finally { state.profile.end(ProfilerCounters.CHUNK_UNLOAD, profileStart, profileFailed ? 0 : 1); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.CHUNK_UNLOAD);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.CHUNK_UNLOAD, profileStart, profileFailed ? 0 : 1);
+        }
     }
 
     public void changed(int x, int y, int z) {
@@ -204,8 +221,12 @@ public final class WorldRuntime implements AutoCloseable {
             changes.add(new BlockPos(state.dimension, x, y, z));
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.INVALIDATION); throw failure;
-        } finally { state.profile.end(ProfilerCounters.INVALIDATION, profileStart, profileFailed ? 0 : 1); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.INVALIDATION);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.INVALIDATION, profileStart, profileFailed ? 0 : 1);
+        }
     }
 
     public void invalidate(BlockPos min, BlockPos max) {
@@ -224,8 +245,12 @@ public final class WorldRuntime implements AutoCloseable {
             state.invalidateRegion(min, max);
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.INVALIDATION); throw failure;
-        } finally { state.profile.end(ProfilerCounters.INVALIDATION, profileStart, profileFailed ? 0 : 1); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.INVALIDATION);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.INVALIDATION, profileStart, profileFailed ? 0 : 1);
+        }
     }
 
     public void tick() {
@@ -272,8 +297,11 @@ public final class WorldRuntime implements AutoCloseable {
         }
         long deliveryDuration = System.nanoTime() - deliveryStart;
         state.profile.record(ProfilerCounters.DELIVERY, deliveryDuration, perfDeliveryAttempts - profileAttemptsBefore);
-        state.profile.outcome(ProfilerCounters.DELIVERY, perfDelivered - profileDeliveredBefore,
-            perfDeferred - profileDeferredBefore, 0);
+        state.profile.outcome(
+            ProfilerCounters.DELIVERY,
+            perfDelivered - profileDeliveredBefore,
+            perfDeferred - profileDeferredBefore,
+            0);
         perfDeliveryNanos += deliveryDuration;
         perfMaxDeliveryNanos = Math.max(perfMaxDeliveryNanos, deliveryDuration);
         long preGeometrySmog = System.nanoTime() - tickStart;
@@ -301,11 +329,22 @@ public final class WorldRuntime implements AutoCloseable {
         }
         state.profile.endTickCpu(profileCpuStart);
         state.profile.record(ProfilerCounters.RUNTIME, tickDuration, 1);
-        state.profile.tick(now, tickStart + tickDuration, tickDuration, deliveryDuration, state.lastTickNanos,
-            state.lastGeometryNanos, state.lastLawNanos, store.pollNanos - profilePollBefore, geometryAllowance,
+        state.profile.tick(
+            now,
+            tickStart + tickDuration,
+            tickDuration,
+            deliveryDuration,
+            state.lastTickNanos,
+            state.lastGeometryNanos,
+            state.lastLawNanos,
+            store.pollNanos - profilePollBefore,
+            geometryAllowance,
             state.publications - profilePublishedBefore,
-            (long)state.restartMetrics.get("prepared_append_queue") + (long)state.restartMetrics.get("prepared_replacement_queue"),
-            state.pendingIntervals(), state.lastGeometryReason, state.lastGeometryBlockingMask);
+            (long) state.restartMetrics.get("prepared_append_queue")
+                + (long) state.restartMetrics.get("prepared_replacement_queue"),
+            state.pendingIntervals(),
+            state.lastGeometryReason,
+            state.lastGeometryBlockingMask);
         if (perfLogging && now >= nextPerfLogTick) {
             logPerformance(now);
         }
@@ -820,7 +859,8 @@ public final class WorldRuntime implements AutoCloseable {
                 + "/"
                 + m.queueWaitMaxTicks
                 + "/"
-                + (newPreparedWaits == 0 ? -1 : (m.preparedWaitTotalTicks - lastLogPreparedWaitTicks) / newPreparedWaits)
+                + (newPreparedWaits == 0 ? -1
+                    : (m.preparedWaitTotalTicks - lastLogPreparedWaitTicks) / newPreparedWaits)
                 + "/"
                 + m.preparedWaitMaxTicks
                 + " queueHeadAgeTicks(build/prepared)="
@@ -1019,8 +1059,12 @@ public final class WorldRuntime implements AutoCloseable {
             nextPerfLogTick = now + PERF_LOG_TICKS;
 
         } catch (RuntimeException | Error failure) {
-            profileFailed = true; state.profile.failure(ProfilerCounters.DIAGNOSTICS); throw failure;
-        } finally { state.profile.end(ProfilerCounters.DIAGNOSTICS, profileStart, profileFailed ? 0 : 1); }
+            profileFailed = true;
+            state.profile.failure(ProfilerCounters.DIAGNOSTICS);
+            throw failure;
+        } finally {
+            state.profile.end(ProfilerCounters.DIAGNOSTICS, profileStart, profileFailed ? 0 : 1);
+        }
     }
 
     private boolean deliver(PendingPulse pulse) {

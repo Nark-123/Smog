@@ -29,7 +29,10 @@ final class EdgeAccumulator {
         if (source == this) {
             return;
         }
-        if (source.size == 0) { clear(); return; }
+        if (source.size == 0) {
+            clear();
+            return;
+        }
         if (keys.length < source.keys.length) {
             keys = new long[source.keys.length];
             areas = new int[source.keys.length];
@@ -70,7 +73,9 @@ final class EdgeAccumulator {
         }
         long key = ((long) a << 32) | (b & 0xffffffffL);
         if (keys.length == 0) {
-            keys = new long[32]; areas = new int[32]; distances = new int[32];
+            keys = new long[32];
+            areas = new int[32];
+            distances = new int[32];
         }
         if ((size + 1) * 2 >= keys.length) {
             grow();

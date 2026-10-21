@@ -142,11 +142,17 @@ public final class ContactRefreshReuseTests {
         check(empty.bytes() == 0 && empty.records() == empty.records(), "empty accumulator allocates arrays");
         for (int n = 1; n <= 4; n++) {
             EdgeAccumulator small = new EdgeAccumulator();
-            for (int i = 0; i < n; i++) { small.add(i, 512 + i, 7); small.addAggregate(512 + i, i, 3, 2); }
+            for (int i = 0; i < n; i++) {
+                small.add(i, 512 + i, 7);
+                small.addAggregate(512 + i, i, 3, 2);
+            }
             int[] records = small.records();
             for (int i = 0; i < n; i++) {
-                check(records[4 * i] == i && records[4 * i + 1] == 512 + i
-                    && records[4 * i + 2] == 4 && records[4 * i + 3] == 2, "small aggregate key/area/min/order");
+                check(
+                    records[4 * i] == i && records[4 * i + 1] == 512 + i
+                        && records[4 * i + 2] == 4
+                        && records[4 * i + 3] == 2,
+                    "small aggregate key/area/min/order");
             }
             small.copyFrom(empty);
             check(small.records() == empty.records(), "empty copy retained records");

@@ -35,12 +35,17 @@ public final class SmogCommand extends CommandBase {
         WorldRuntime runtime = Worlds.get(sender.getEntityWorld());
         if (args.length == 2 && "profile".equals(args[0])) {
             String level = args[1].toUpperCase(java.util.Locale.ROOT);
-            if (!level.equals("OFF") && !level.equals("BASIC") && !level.equals("SAMPLED") && !level.equals("DIAGNOSTIC"))
-                throw new WrongUsageException(getCommandUsage(sender));
+            if (!level.equals("OFF") && !level.equals("BASIC")
+                && !level.equals("SAMPLED")
+                && !level.equals("DIAGNOSTIC")) throw new WrongUsageException(getCommandUsage(sender));
             runtime.state.profile.flush(runtime.world.getTotalWorldTime(), System.nanoTime(), true);
             runtime.state.profile.level(ProfilerCounters.parseLevel(level));
-            sender.addChatMessage(new ChatComponentText("SMOG profile=" + level
-                + " sampleRate=" + runtime.state.profile.sampleRate() + " diagnosticLimit<=400 ticks"));
+            sender.addChatMessage(
+                new ChatComponentText(
+                    "SMOG profile=" + level
+                        + " sampleRate="
+                        + runtime.state.profile.sampleRate()
+                        + " diagnosticLimit<=400 ticks"));
             return;
         }
         if (args.length >= 1 && "perf".equals(args[0])) {

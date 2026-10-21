@@ -3,7 +3,6 @@ package smog;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Locale;
 
 /** 3000 columns x 16 Cube16 x 8 Cell8, with >390 MiB v1-equivalent memberships. */
 public final class LargeCheckpointTests {

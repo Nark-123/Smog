@@ -95,7 +95,8 @@ final class PerformanceFileLog {
                         Files.createDirectories(csvPath.getParent());
                         boolean writeHeader = !Files.exists(csvPath) || Files.size(csvPath) == 0;
                         if (!writeHeader) {
-                            try (java.io.BufferedReader reader = Files.newBufferedReader(csvPath, StandardCharsets.UTF_8)) {
+                            try (java.io.BufferedReader reader = Files
+                                .newBufferedReader(csvPath, StandardCharsets.UTF_8)) {
                                 if (!header.equals(reader.readLine()))
                                     throw new IOException("CSV header mismatch: refusing mixed performance schemas");
                             }

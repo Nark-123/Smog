@@ -38,8 +38,8 @@ final class GeometryPack {
                 .clone();
     }
 
-    private GeometryPack(CellKey key, VoxelLabels labels, VoxelDistance distance, int[] volumes, int[] seeds, double[] boundary,
-        int[] contacts, CubeKey[] dependencies, byte[][] fingerprints) {
+    private GeometryPack(CellKey key, VoxelLabels labels, VoxelDistance distance, int[] volumes, int[] seeds,
+        double[] boundary, int[] contacts, CubeKey[] dependencies, byte[][] fingerprints) {
         this.key = key;
         this.labels = labels;
         this.distance = distance;
@@ -66,18 +66,23 @@ final class GeometryPack {
         }
     }
 
-    void write(DataOutput out) throws IOException { write(out,1); }
+    void write(DataOutput out) throws IOException {
+        write(out, 1);
+    }
 
-    void write(DataOutput out,int version) throws IOException {
-        if(version!=1 && version!=2) throw new IOException("Unsupported pack version");
+    void write(DataOutput out, int version) throws IOException {
+        if (version != 1 && version != 2) throw new IOException("Unsupported pack version");
         out.writeInt(key.x);
         out.writeInt(key.y);
         out.writeInt(key.z);
         out.writeShort(volumes.length);
-        if(version==1) {
-            for (int p=0;p<512;p++) out.writeShort(labels.get(p));
-            for (int p=0;p<512;p++) out.writeByte(distance.get(p));
-        } else { labels.writeAdaptive(out,volumes.length); distance.writeAdaptive(out); }
+        if (version == 1) {
+            for (int p = 0; p < 512; p++) out.writeShort(labels.get(p));
+            for (int p = 0; p < 512; p++) out.writeByte(distance.get(p));
+        } else {
+            labels.writeAdaptive(out, volumes.length);
+            distance.writeAdaptive(out);
+        }
         for (int i = 0; i < volumes.length; i++) {
             out.writeShort(volumes[i]);
             out.writeShort(seeds[i]);
@@ -96,10 +101,12 @@ final class GeometryPack {
         }
     }
 
-    static GeometryPack read(DataInput in,int dimension) throws IOException { return read(in,dimension,1); }
+    static GeometryPack read(DataInput in, int dimension) throws IOException {
+        return read(in, dimension, 1);
+    }
 
-    static GeometryPack read(DataInput in,int dimension,int version) throws IOException {
-        if(version!=1 && version!=2) throw new IOException("Unsupported pack version");
+    static GeometryPack read(DataInput in, int dimension, int version) throws IOException {
+        if (version != 1 && version != 2) throw new IOException("Unsupported pack version");
         CellKey key = new CellKey(dimension, in.readInt(), in.readInt(), in.readInt());
         key.block(511);
         int n = in.readUnsignedShort();
@@ -107,10 +114,12 @@ final class GeometryPack {
         int[] counts = new int[n], volumes = new int[n], seeds = new int[n];
         byte[] distance = DISTANCE_SCRATCH.get();
         double[] boundary = new double[n];
-        VoxelLabels labels=version==1 ? VoxelLabels.read(in,n,counts) : VoxelLabels.readAdaptive(in,n,counts);
+        VoxelLabels labels = version == 1 ? VoxelLabels.read(in, n, counts) : VoxelLabels.readAdaptive(in, n, counts);
         VoxelDistance distances;
-        if(version==1) { in.readFully(distance); distances=VoxelDistance.of(distance); }
-        else distances=VoxelDistance.readAdaptive(in,distance);
+        if (version == 1) {
+            in.readFully(distance);
+            distances = VoxelDistance.of(distance);
+        } else distances = VoxelDistance.readAdaptive(in, distance);
         for (int i = 0; i < n; i++) {
             volumes[i] = in.readUnsignedShort();
             seeds[i] = in.readUnsignedShort();
@@ -119,7 +128,8 @@ final class GeometryPack {
                 || seeds[i] >= 512
                 || labels.get(seeds[i]) != i
                 || !Double.isFinite(boundary[i])
-                || boundary[i] < 0 || boundary[i] > 6144) throw new IOException("Invalid cache node geometry");
+                || boundary[i] < 0
+                || boundary[i] > 6144) throw new IOException("Invalid cache node geometry");
         }
         int edges = in.readInt();
         if (edges < 0 || edges > 1344) throw new IOException("Cache contact count");
@@ -155,13 +165,9 @@ final class GeometryPack {
         for (int i = 0; i < deps; i++) {
             keys[i] = new CubeKey(dimension, in.readInt(), in.readInt(), in.readInt());
             CubeKey k = keys[i];
-            if (k.x < min.x || k.x > max.x
-                || k.y < min.y
-                || k.y > max.y
-                || k.z < min.z
-                || k.z > max.z) throw new IOException("Cache halo coordinates");
-            int slot = k.x - min.x + (max.x - min.x + 1) * (k.y - min.y
-                + (max.y - min.y + 1) * (k.z - min.z));
+            if (k.x < min.x || k.x > max.x || k.y < min.y || k.y > max.y || k.z < min.z || k.z > max.z)
+                throw new IOException("Cache halo coordinates");
+            int slot = k.x - min.x + (max.x - min.x + 1) * (k.y - min.y + (max.y - min.y + 1) * (k.z - min.z));
             if ((occupied & (1 << slot)) != 0) throw new IOException("Cache duplicate halo");
             occupied |= 1 << slot;
             if (in.readBoolean()) {
@@ -174,7 +180,10 @@ final class GeometryPack {
     }
 
     long bytes() {
-        return 256L + labels.bytes() + distance.bytes() + 16L * volumes.length
-            + 4L * contacts.length + 96L * dependencies.length;
+        return 256L + labels.bytes()
+            + distance.bytes()
+            + 16L * volumes.length
+            + 4L * contacts.length
+            + 96L * dependencies.length;
     }
 }

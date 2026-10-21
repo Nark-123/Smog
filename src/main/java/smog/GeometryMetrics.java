@@ -8,6 +8,7 @@ import java.util.Arrays;
  * Timing is performed once per existing scheduler unit, never per voxel/BFS vertex.
  */
 public final class GeometryMetrics {
+
     ProfilerCounters profile;
 
     public static final int SNAPSHOTS = 0;

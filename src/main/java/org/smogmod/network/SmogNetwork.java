@@ -18,8 +18,8 @@ import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.network.NetworkRegistry;
 import cpw.mods.fml.common.network.simpleimpl.SimpleNetworkWrapper;
 import cpw.mods.fml.relauncher.Side;
-import smog.SpatialQueries;
 import smog.ProfilerCounters;
+import smog.SpatialQueries;
 
 public final class SmogNetwork {
 
@@ -70,46 +70,48 @@ public final class SmogNetwork {
         }
         long profileStart = runtime.state.profile.begin(ProfilerCounters.NETWORK);
         try {
-        Set<Long> requested = new HashSet<>();
-        for (Object item : runtime.world.playerEntities) {
-            EntityPlayerMP player = (EntityPlayerMP) item;
-            Map<ChunkCoordIntPair, Integer> chunks = watched.get(player.getUniqueID());
-            if (chunks != null) {
-                for (ChunkCoordIntPair chunk : chunks.keySet()) {
-                    requested.add(SpatialQueries.chunkKey(chunk.chunkXPos, chunk.chunkZPos));
-                }
-            }
-        }
-        SpatialQueries.ChunkMassBatch batch = SpatialQueries.chunkMasses(runtime.state, requested);
-        runtime.networkBatches++;
-        runtime.networkUniqueChunks = requested.size();
-        runtime.networkFullScans = requested.isEmpty() ? 0 : 1;
-        runtime.networkCubeVisits = batch.cubeVisits;
-        runtime.networkPackets = 0;
-        for (Object item : runtime.world.playerEntities) {
-            EntityPlayerMP player = (EntityPlayerMP) item;
-            Map<ChunkCoordIntPair, Integer> chunks = watched.get(player.getUniqueID());
-            if (chunks != null) {
-                for (Map.Entry<ChunkCoordIntPair, Integer> entry : chunks.entrySet()) {
-                    ChunkCoordIntPair chunk = entry.getKey();
-                    int amount = SmogGt5uBridge
-                        .clamp(batch.masses.get(SpatialQueries.chunkKey(chunk.chunkXPos, chunk.chunkZPos)));
-                    if (amount != entry.getValue()) {
-                        send(player, chunk, amount, false);
-                        runtime.networkPackets++;
-                        entry.setValue(amount);
+            Set<Long> requested = new HashSet<>();
+            for (Object item : runtime.world.playerEntities) {
+                EntityPlayerMP player = (EntityPlayerMP) item;
+                Map<ChunkCoordIntPair, Integer> chunks = watched.get(player.getUniqueID());
+                if (chunks != null) {
+                    for (ChunkCoordIntPair chunk : chunks.keySet()) {
+                        requested.add(SpatialQueries.chunkKey(chunk.chunkXPos, chunk.chunkZPos));
                     }
                 }
             }
-            int amount = SmogGt5uBridge.local(
-                runtime.world,
-                (int) Math.floor(player.posX),
-                (int) Math.floor(player.posY + player.getEyeHeight()),
-                (int) Math.floor(player.posZ));
-            send(player, new ChunkCoordIntPair(0, 0), amount, true);
-            runtime.networkPackets++;
+            SpatialQueries.ChunkMassBatch batch = SpatialQueries.chunkMasses(runtime.state, requested);
+            runtime.networkBatches++;
+            runtime.networkUniqueChunks = requested.size();
+            runtime.networkFullScans = requested.isEmpty() ? 0 : 1;
+            runtime.networkCubeVisits = batch.cubeVisits;
+            runtime.networkPackets = 0;
+            for (Object item : runtime.world.playerEntities) {
+                EntityPlayerMP player = (EntityPlayerMP) item;
+                Map<ChunkCoordIntPair, Integer> chunks = watched.get(player.getUniqueID());
+                if (chunks != null) {
+                    for (Map.Entry<ChunkCoordIntPair, Integer> entry : chunks.entrySet()) {
+                        ChunkCoordIntPair chunk = entry.getKey();
+                        int amount = SmogGt5uBridge
+                            .clamp(batch.masses.get(SpatialQueries.chunkKey(chunk.chunkXPos, chunk.chunkZPos)));
+                        if (amount != entry.getValue()) {
+                            send(player, chunk, amount, false);
+                            runtime.networkPackets++;
+                            entry.setValue(amount);
+                        }
+                    }
+                }
+                int amount = SmogGt5uBridge.local(
+                    runtime.world,
+                    (int) Math.floor(player.posX),
+                    (int) Math.floor(player.posY + player.getEyeHeight()),
+                    (int) Math.floor(player.posZ));
+                send(player, new ChunkCoordIntPair(0, 0), amount, true);
+                runtime.networkPackets++;
+            }
+        } finally {
+            runtime.state.profile.end(ProfilerCounters.NETWORK, profileStart, runtime.networkPackets);
         }
-        } finally { runtime.state.profile.end(ProfilerCounters.NETWORK, profileStart, runtime.networkPackets); }
     }
 
     public void clear() {

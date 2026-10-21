@@ -6,18 +6,27 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-/** Private region preparation, bounded micro-publications, one simulation owning thread.
+/**
+ * Private region preparation, bounded micro-publications, one simulation owning thread.
  * Local edge endpoints are group offsets; external endpoints are encoded as -1-runtimeId.
- * Each cross-cell edge belongs to the later entry, so future micro-batches defer it naturally. */
+ * Each cross-cell edge belongs to the later entry, so future micro-batches defer it naturally.
+ */
 final class EpochRestorePlan extends RestorePlan {
+
     private static final class Load {
+
         final CubeKey key;
         final CompletableFuture<GeometryCache.Lookup> future;
         GeometryCache.Lookup lookup;
-        Load(DimensionState s, CubeKey key) { this.key = key; future = s.geometryCache.request(key); }
+
+        Load(DimensionState s, CubeKey key) {
+            this.key = key;
+            future = s.geometryCache.request(key);
+        }
     }
 
     private static final class Entry extends EpochAppendBatch.Item {
+
         final long ticket;
         final Load load;
         final Entry[] localNeighbors = new Entry[6];
@@ -25,14 +34,17 @@ final class EpochRestorePlan extends RestorePlan {
         final int[][] faceRecords = new int[6][];
         ImmutableCubeSnapshot[] snapshots;
         int order;
+
         Entry(DimensionState state, DimensionState.Cell cell, Load load) {
-            super(state, cell); this.load = load; ticket = cell.ticket;
+            super(state, cell);
+            this.load = load;
+            ticket = cell.ticket;
         }
+
         void mergeExternal() {
             external.clear();
-            for (int[] records : faceRecords) if (records != null)
-                for (int i = 0; i < records.length; i += 4)
-                    external.addAggregate(records[i], records[i + 1], records[i + 2], records[i + 3]);
+            for (int[] records : faceRecords) if (records != null) for (int i = 0; i < records.length; i += 4)
+                external.addAggregate(records[i], records[i + 1], records[i + 2], records[i + 3]);
             externalRecords = external.records();
             external.clear();
         }
@@ -70,9 +82,14 @@ final class EpochRestorePlan extends RestorePlan {
         if (cube == null || !state.provider.isReady(key)) return;
         Load load = null;
         for (DimensionState.Cell c : cube.cells) {
-            if (c == null || c.geometry != null || c.building || c.cacheAttempted
+            if (c == null || c.geometry != null
+                || c.building
+                || c.cacheAttempted
                 || !(c.checkpointRestorePending || c.reloadCacheEligible)) continue;
-            if (load == null) { load = new Load(state, key); loads.add(load); }
+            if (load == null) {
+                load = new Load(state, key);
+                loads.add(load);
+            }
             c.queued = false;
             c.building = c.cacheAttempted = true;
             entries.add(new Entry(state, c, load));
@@ -90,10 +107,12 @@ final class EpochRestorePlan extends RestorePlan {
         long start = System.nanoTime();
         int result = advanceUnit();
         long now = System.nanoTime();
-        state.profile.record(phase == 2 || phase == 4 ? ProfilerCounters.EPOCH_CONTACTS
-            : ProfilerCounters.EPOCH_PLAN, now - start, 1);
-        if (result < 0) state.profile.reason(phase == 0 ? ProfilerCounters.CACHE_PENDING
-            : ProfilerCounters.WAIT_SAFE_CUT, now - start);
+        state.profile.record(
+            phase == 2 || phase == 4 ? ProfilerCounters.EPOCH_CONTACTS : ProfilerCounters.EPOCH_PLAN,
+            now - start,
+            1);
+        if (result < 0) state.profile
+            .reason(phase == 0 ? ProfilerCounters.CACHE_PENDING : ProfilerCounters.WAIT_SAFE_CUT, now - start);
         if (result < 0) {
             if (waitingSince == 0) waitingSince = start;
         } else {
@@ -115,11 +134,21 @@ final class EpochRestorePlan extends RestorePlan {
     private int advanceUnit() {
         if (!state.epochRestoreEnabled()) return abandon();
         if (stage == 0) {
-            if (cursor == loads.size()) { cursor = 0; stage = 1; return 1; }
+            if (cursor == loads.size()) {
+                cursor = 0;
+                stage = 1;
+                return 1;
+            }
             Load load = loads.get(cursor);
-            if (!load.future.isDone()) { state.restartMetrics.add("plan_stop_cache_not_ready", 1); return -1; }
-            try { load.lookup = load.future.join(); }
-            catch (RuntimeException failure) { load.lookup = new GeometryCache.Lookup(GeometryCache.Status.CORRUPT); }
+            if (!load.future.isDone()) {
+                state.restartMetrics.add("plan_stop_cache_not_ready", 1);
+                return -1;
+            }
+            try {
+                load.lookup = load.future.join();
+            } catch (RuntimeException failure) {
+                load.lookup = new GeometryCache.Lookup(GeometryCache.Status.CORRUPT);
+            }
             state.geometryCache.accept(load.key, load.lookup, state.restartMetrics);
             cursor++;
             return 1;
@@ -127,15 +156,17 @@ final class EpochRestorePlan extends RestorePlan {
         if (stage == 1) {
             if (cursor == entries.size()) {
                 for (int i = 0; i < entries.size(); i++) {
-                    Entry e = entries.get(i); e.order = i; index.put(e.cell.key, e);
+                    Entry e = entries.get(i);
+                    e.order = i;
+                    index.put(e.cell.key, e);
                 }
-                for (Entry e : entries)
-                    for (int d = 0; d < 6; d++) {
-                        e.localNeighbors[d] = index.get(e.neighbors.keys[d]);
-                        if (e.localNeighbors[d] != null) e.neighbors.bind(d, e.localNeighbors[d].cell);
-                    }
+                for (Entry e : entries) for (int d = 0; d < 6; d++) {
+                    e.localNeighbors[d] = index.get(e.neighbors.keys[d]);
+                    if (e.localNeighbors[d] != null) e.neighbors.bind(d, e.localNeighbors[d].cell);
+                }
                 runtimeIds = new int[nodes];
-                cursor = face = voxel = 0; stage = 2;
+                cursor = face = voxel = 0;
+                stage = 2;
                 return 1;
             }
             Entry e = entries.get(cursor);
@@ -145,14 +176,19 @@ final class EpochRestorePlan extends RestorePlan {
                     String metric = e.load.lookup.status == GeometryCache.Status.CONFIG ? "cache_invalid_config"
                         : e.load.lookup.status == GeometryCache.Status.CORRUPT ? "cache_corrupt" : "cache_misses";
                     state.restartMetrics.add(metric, 1);
-                    if (e.load.lookup.status == GeometryCache.Status.CORRUPT || e.load.lookup.status == GeometryCache.Status.CONFIG)
+                    if (e.load.lookup.status == GeometryCache.Status.CORRUPT
+                        || e.load.lookup.status == GeometryCache.Status.CONFIG)
                         e.cell.cacheState = DimensionState.GeometryState.INVALID;
-                    release(e, false); entries.remove(cursor); return 1;
+                    release(e, false);
+                    entries.remove(cursor);
+                    return 1;
                 }
                 if (nodes + e.pack.volumes.length > state.restartOptions.regionNodes
                     || e.pack.volumes.length > state.restartOptions.batchNodes) {
                     state.restartMetrics.add("plan_stop_node_limit", 1);
-                    release(e, true); entries.remove(cursor); return 1;
+                    release(e, true);
+                    entries.remove(cursor);
+                    return 1;
                 }
                 if (!optimistic) e.snapshots = new ImmutableCubeSnapshot[e.pack.dependencies.length];
                 dependency = 0;
@@ -164,37 +200,59 @@ final class EpochRestorePlan extends RestorePlan {
                 state.restartMetrics.add("cache_fingerprint_ms", (System.nanoTime() - start) / 1e6);
                 if (!Arrays.equals(fingerprint, e.pack.fingerprints[dependency])) {
                     state.restartMetrics.add("cache_invalid_world", 1);
-                    release(e, false); entries.remove(cursor); return 1;
+                    release(e, false);
+                    entries.remove(cursor);
+                    return 1;
                 }
                 e.snapshots[dependency++] = snapshot;
                 return 1;
             }
-            if (!valid(e)) { release(e, false); entries.remove(cursor); return 1; }
+            if (!valid(e)) {
+                release(e, false);
+                entries.remove(cursor);
+                return 1;
+            }
             DimensionState.Geometry g = e.geometry = new DimensionState.Geometry();
-            g.verification = optimistic ? DimensionState.GeometryState.UNVERIFIED : DimensionState.GeometryState.VALIDATED;
-            g.labels = e.pack.labels; g.distance = e.pack.distance; g.volumes = e.pack.volumes;
-            g.ids = new int[g.volumes.length]; g.dependencies = e.pack.dependencies;
+            g.verification = optimistic ? DimensionState.GeometryState.UNVERIFIED
+                : DimensionState.GeometryState.VALIDATED;
+            g.labels = e.pack.labels;
+            g.distance = e.pack.distance;
+            g.volumes = e.pack.volumes;
+            g.ids = new int[g.volumes.length];
+            g.dependencies = e.pack.dependencies;
             if (!optimistic) {
-                g.epochs = new long[g.dependencies.length]; g.revisions = new long[g.dependencies.length];
+                g.epochs = new long[g.dependencies.length];
+                g.revisions = new long[g.dependencies.length];
                 for (int i = 0; i < g.dependencies.length; i++) {
                     ImmutableCubeSnapshot s = e.snapshots[i];
-                    g.epochs[i] = s == null ? -1 : s.epoch; g.revisions[i] = s == null ? -1 : s.revision;
+                    g.epochs[i] = s == null ? -1 : s.epoch;
+                    g.revisions[i] = s == null ? -1 : s.revision;
                 }
             }
-            e.base = nodes; nodes += g.volumes.length;
-            for (int i = 0; i < e.pack.contacts.length; i += 4)
-                e.local.addAggregate(e.base + e.pack.contacts[i], e.base + e.pack.contacts[i + 1],
-                    e.pack.contacts[i + 2], e.pack.contacts[i + 3]);
+            e.base = nodes;
+            nodes += g.volumes.length;
+            for (int i = 0; i < e.pack.contacts.length; i += 4) e.local.addAggregate(
+                e.base + e.pack.contacts[i],
+                e.base + e.pack.contacts[i + 1],
+                e.pack.contacts[i + 2],
+                e.pack.contacts[i + 3]);
             state.restartMetrics.add("cache_hits", 1);
             cursor++;
             return 1;
         }
         if (stage == 2 || stage == 4) {
-            if (stage == 2 && cursor == entries.size()) { stage = 3; return 1; }
+            if (stage == 2 && cursor == entries.size()) {
+                stage = 3;
+                return 1;
+            }
             Entry e = entries.get(stage == 4 ? refreshing : cursor);
             if (stage == 4 && (refreshMask & (1 << face)) == 0) {
                 if (++face < 6) return 1;
-                face = 0; e.mergeExternal(); stage = 3; batchStop = -1; return 1;
+                face = 0;
+                e.mergeExternal();
+                stage = 3;
+                batchStop = -1;
+                return 1;
             }
             if (voxel == 0) e.neighbors.capture(face);
             Entry other = e.localNeighbors[face];
@@ -204,36 +262,51 @@ final class EpochRestorePlan extends RestorePlan {
             // and length; aggregate their exact area, without merging physical nodes.
             if (g == null || other != null && (stage == 4 || other.order >= e.order)) voxel = 64;
             else if (state.restartOptions.epochCompactContacts && voxel == 0
-                && e.geometry.volumes.length == 1 && e.geometry.volumes[0] == 512
-                && g.volumes.length == 1 && g.volumes[0] == 512
-                && e.geometry.distance.payloadBytes() == 0 && g.distance.payloadBytes() == 0) {
+                && e.geometry.volumes.length == 1
+                && e.geometry.volumes[0] == 512
+                && g.volumes.length == 1
+                && g.volumes[0] == 512
+                && e.geometry.distance.payloadBytes() == 0
+                && g.distance.payloadBytes() == 0) {
                     EdgeAccumulator edges = other == null ? e.external : e.local;
-                    edges.addAggregate(e.base, other == null ? -1 - g.ids[0] : other.base, 64,
+                    edges.addAggregate(
+                        e.base,
+                        other == null ? -1 - g.ids[0] : other.base,
+                        64,
                         e.geometry.distance.get(0) + g.distance.get(0) + 1);
                     voxel = 64;
-            }
+                }
             int unit = state.restartOptions.epochCompactContacts ? 64 : 16;
             for (int stop = Math.min(64, voxel + unit); voxel < stop; voxel++) {
                 int p = CellBuild.face(face, voxel), q = CellBuild.face(face ^ 1, voxel);
                 int a = e.geometry.labels.get(p), b = g.labels.get(q);
                 if (a >= 0 && b >= 0) {
                     EdgeAccumulator edges = other == null ? e.external : e.local;
-                    edges.add(e.base + a, other == null ? -1 - g.ids[b] : other.base + b,
+                    edges.add(
+                        e.base + a,
+                        other == null ? -1 - g.ids[b] : other.base + b,
                         e.geometry.distance.get(p) + g.distance.get(q) + 1);
                 }
             }
             if (voxel == 64) {
                 voxel = 0;
-                e.faceRecords[face] = e.external.records(); e.external.clear();
+                e.faceRecords[face] = e.external.records();
+                e.external.clear();
                 if (++face == 6) {
-                    face = 0; e.mergeExternal();
+                    face = 0;
+                    e.mergeExternal();
                     if (stage == 2) {
                         preparedEdges += e.local.size() + e.externalRecords.length / 4;
                         if (preparedEdges > state.restartOptions.regionEdges) {
-                            state.restartMetrics.add("plan_stop_edge_limit", 1); return abandon(e);
+                            state.restartMetrics.add("plan_stop_edge_limit", 1);
+                            return abandon(e);
                         }
-                        e.localRecords = e.local.records(); cursor++;
-                    } else { stage = 3; batchStop = -1; }
+                        e.localRecords = e.local.records();
+                        cursor++;
+                    } else {
+                        stage = 3;
+                        batchStop = -1;
+                    }
                 }
             }
             return 1;
@@ -241,15 +314,28 @@ final class EpochRestorePlan extends RestorePlan {
         if (published == entries.size()) return 0;
         if (!state.canEpochCommit()) return -1;
         if (batchStop < 0) {
-            batchStop = published; batchNodes = batchEdges = 0; capacityReady = false;
+            batchStop = published;
+            batchNodes = batchEdges = 0;
+            capacityReady = false;
             String reason = "complete";
             while (batchStop < entries.size()) {
-                if (batchStop - published == state.restartOptions.microCells) { reason = "cell_limit"; break; }
+                if (batchStop - published == state.restartOptions.microCells) {
+                    reason = "cell_limit";
+                    break;
+                }
                 Entry e = entries.get(batchStop);
                 int n = e.geometry.ids.length, edges = (e.localRecords.length + e.externalRecords.length) / 4;
-                if (batchNodes + n > state.restartOptions.batchNodes) { reason = "node_limit"; break; }
-                if (batchEdges + edges > state.restartOptions.batchEdges) { reason = "edge_limit"; break; }
-                batchNodes += n; batchEdges += edges; batchStop++;
+                if (batchNodes + n > state.restartOptions.batchNodes) {
+                    reason = "node_limit";
+                    break;
+                }
+                if (batchEdges + edges > state.restartOptions.batchEdges) {
+                    reason = "edge_limit";
+                    break;
+                }
+                batchNodes += n;
+                batchEdges += edges;
+                batchStop++;
             }
             state.restartMetrics.add("batch_stop_" + reason, 1);
         }
@@ -257,7 +343,8 @@ final class EpochRestorePlan extends RestorePlan {
         // RESERVING never redoes world validation or contact preparation.
         if (!capacityReady) {
             if (!state.prepareEpochCapacity(batchNodes, batchEdges)) {
-                state.restartMetrics.add("capacity_retries", 1); return 1;
+                state.restartMetrics.add("capacity_retries", 1);
+                return 1;
             }
             capacityReady = true;
         }
@@ -265,7 +352,10 @@ final class EpochRestorePlan extends RestorePlan {
         state.restartMetrics.add("preflight_rechecks", 1);
         for (int i = published; i < batchStop; i++) {
             Entry e = entries.get(i);
-            if (!valid(e)) { state.restartMetrics.add("batch_stop_stale", 1); return abandon(e); }
+            if (!valid(e)) {
+                state.restartMetrics.add("batch_stop_stale", 1);
+                return abandon(e);
+            }
             int changed = 0;
             for (int d = 0; d < 6; d++) {
                 Entry other = e.localNeighbors[d];
@@ -274,8 +364,12 @@ final class EpochRestorePlan extends RestorePlan {
                 } else if (e.neighbors.changed(d)) changed |= 1 << d;
             }
             if (changed != 0) {
-                refreshing = i; refreshMask = changed; face = voxel = 0;
-                e.external.clear(); stage = 4; return 1;
+                refreshing = i;
+                refreshMask = changed;
+                face = voxel = 0;
+                e.external.clear();
+                stage = 4;
+                return 1;
             }
         }
         int stop = batchStop;
@@ -290,7 +384,10 @@ final class EpochRestorePlan extends RestorePlan {
                 e.cell.diagnosticQueuedTick = e.cell.diagnosticPreparedTick = -1;
                 state.startup.published(e.cell, true);
             }
-        } catch (RuntimeException | Error failure) { state.failAppend(failure); throw failure; }
+        } catch (RuntimeException | Error failure) {
+            state.failAppend(failure);
+            throw failure;
+        }
         int count = stop - published;
         state.recordFastPublication(duration, count);
         state.restartMetrics.add("fast_restore_batches", 1);
@@ -298,7 +395,8 @@ final class EpochRestorePlan extends RestorePlan {
         state.restartMetrics.add("fast_restore_edges", batchEdges);
         state.restartMetrics.add("fast_restore_commit_ms", duration / 1e6);
         state.restartMetrics.max("fast_restore_max_commit_ms", duration / 1e6);
-        published = stop; batchStop = -1;
+        published = stop;
+        batchStop = -1;
         return published == entries.size() ? 0 : 1;
     }
 
@@ -306,23 +404,28 @@ final class EpochRestorePlan extends RestorePlan {
         if (e.cell.ticket != e.ticket || e.cell.geometry != null
             || !(e.cell.checkpointRestorePending || e.cell.reloadCacheEligible)
             || !state.provider.isReady(e.cell.cube.key)) return false;
-        if (!optimistic && e.snapshots != null)
-            for (int i = 0; i < e.snapshots.length; i++)
-                if (!state.provider.matchesSnapshot(e.pack.dependencies[i], e.snapshots[i])) return false;
+        if (!optimistic && e.snapshots != null) for (int i = 0; i < e.snapshots.length; i++)
+            if (!state.provider.matchesSnapshot(e.pack.dependencies[i], e.snapshots[i])) return false;
         return true;
     }
 
     private void release(Entry e, boolean retry) {
-        e.cell.building = false; e.cell.cacheAttempted = !retry;
+        e.cell.building = false;
+        e.cell.cacheAttempted = !retry;
         state.restartMetrics.add("epoch_fallback_cells", 1);
         state.enqueue(e.cell);
     }
-    private int abandon() { return abandon(null); }
+
+    private int abandon() {
+        return abandon(null);
+    }
+
     private int abandon(Entry invalid) {
         // Discard all private offsets/records together. Valid entries re-enter cache restore
         // with fresh local indices; only the invalid cell is forced through CellBuild.
         for (int i = published; i < entries.size(); i++) {
-            Entry e = entries.get(i); release(e, e != invalid && valid(e));
+            Entry e = entries.get(i);
+            release(e, e != invalid && valid(e));
         }
         return 0;
     }

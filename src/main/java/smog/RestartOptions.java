@@ -14,7 +14,8 @@ final class RestartOptions {
     final int microCells = Math.max(1, Math.min(256, Integer.getInteger("smog.epochMicroCells", 64)));
     final int frontQuota = Math.max(1, Math.min(16, Integer.getInteger("smog.epochFrontQuota", 1)));
     final boolean epochFrontLimit = Boolean.parseBoolean(System.getProperty("smog.epochFrontLimitEnabled", "true"));
-    final boolean epochCompactContacts = Boolean.parseBoolean(System.getProperty("smog.epochCompactContactsEnabled", "true"));
+    final boolean epochCompactContacts = Boolean
+        .parseBoolean(System.getProperty("smog.epochCompactContactsEnabled", "true"));
     final long restoreBudget = millis("smog.restoreBudgetMs", 4, 1, 20);
     final long validationBudget = millis("smog.validationBudgetMs", 1, 0, 10);
     final int preparedCubes = Math.max(1, Math.min(16, Integer.getInteger("smog.restorePreparedCubes", 8)));

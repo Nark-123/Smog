@@ -59,10 +59,7 @@ public final class ColdExactMassTests {
             check(b.geometry.volumes.length == masses.length, "old local node count");
             Checkpoint.CellData d = new Checkpoint.CellData();
             d.key = key;
-            d.mass = new DimensionState.MassRecord(
-                b.geometry.labels,
-                b.geometry.volumes.clone(),
-                masses.clone());
+            d.mass = new DimensionState.MassRecord(b.geometry.labels, b.geometry.volumes.clone(), masses.clone());
             data.cells.add(d);
             for (double m : masses) data.injected += m;
         }

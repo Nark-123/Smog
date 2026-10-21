@@ -2,13 +2,15 @@ package smog;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 
 /** Owner-thread, bounded deferred world checks. Missing sections sleep until a readiness event. */
 final class GeometryValidator {
+
     static final class Task {
+
         final DimensionState.Cell cell;
         final DimensionState.Geometry geometry;
         final byte[][] fingerprints;
@@ -16,6 +18,7 @@ final class GeometryValidator {
         final long tick;
         int cursor;
         boolean missing, queued, waiting;
+
         Task(DimensionState.Cell cell, DimensionState.Geometry geometry, byte[][] fingerprints, long tick) {
             this.cell = cell;
             this.geometry = geometry;
@@ -28,26 +31,41 @@ final class GeometryValidator {
     private final ArrayDeque<Task> queue = new ArrayDeque<>();
     private final LinkedHashSet<Task> pending = new LinkedHashSet<>();
     private int waiting;
+
     private static final class Checked {
+
         final ImmutableCubeSnapshot snapshot;
         final byte[] expected;
-        Checked(ImmutableCubeSnapshot snapshot, byte[] expected) { this.snapshot = snapshot; this.expected = expected; }
+
+        Checked(ImmutableCubeSnapshot snapshot, byte[] expected) {
+            this.snapshot = snapshot;
+            this.expected = expected;
+        }
     }
+
     // Per dimension/config instance; positive checks only, bounded to 128 immutable snapshots.
     private final Map<CubeKey, Checked> dependencies = new LinkedHashMap<CubeKey, Checked>(128, .75f, true) {
-        protected boolean removeEldestEntry(Map.Entry<CubeKey, Checked> e) { return size() > 128; }
+
+        protected boolean removeEldestEntry(Map.Entry<CubeKey, Checked> e) {
+            return size() > 128;
+        }
     };
-    void invalidate(CubeKey key) { dependencies.remove(key); }
+
+    void invalidate(CubeKey key) {
+        dependencies.remove(key);
+    }
 
     private ImmutableCubeSnapshot dependency(CubeKey key, byte[] expected) {
         Checked previous = dependencies.get(key);
         if (previous != null) {
             if (state.provider.matchesSnapshot(key, previous.snapshot)) {
                 if (Arrays.equals(previous.expected, expected)) {
-                    state.restartMetrics.add("reused_dependency_checks", 1); return previous.snapshot;
+                    state.restartMetrics.add("reused_dependency_checks", 1);
+                    return previous.snapshot;
                 }
             } else {
-                dependencies.remove(key); state.restartMetrics.add("validation_stale_rechecks", 1);
+                dependencies.remove(key);
+                state.restartMetrics.add("validation_stale_rechecks", 1);
             }
         }
         ImmutableCubeSnapshot snapshot = state.snapshot(key);
@@ -58,7 +76,9 @@ final class GeometryValidator {
         return snapshot;
     }
 
-    GeometryValidator(DimensionState state) { this.state = state; }
+    GeometryValidator(DimensionState state) {
+        this.state = state;
+    }
 
     void add(DimensionState.Cell cell, DimensionState.Geometry geometry, byte[][] fingerprints) {
         cancel(cell);
@@ -82,14 +102,20 @@ final class GeometryValidator {
         cell.validation = null;
         task.checked = null;
         pending.remove(task);
-        if (task.waiting) { task.waiting = false; waiting--; }
+        if (task.waiting) {
+            task.waiting = false;
+            waiting--;
+        }
         metrics();
     }
 
     void wake(DimensionState.Cell cell) {
         Task task = cell.validation;
         if (task == null) return;
-        if (task.waiting) { task.waiting = false; waiting--; }
+        if (task.waiting) {
+            task.waiting = false;
+            waiting--;
+        }
         task.cursor = 0;
         task.missing = false;
         task.checked = null;
@@ -97,7 +123,9 @@ final class GeometryValidator {
         metrics();
     }
 
-    boolean runnable() { return !queue.isEmpty(); }
+    boolean runnable() {
+        return !queue.isEmpty();
+    }
 
     void advance(long budget) {
         long start = System.nanoTime();
@@ -132,7 +160,8 @@ final class GeometryValidator {
             }
             boolean stale = false;
             for (int i = 0; i < task.checked.length; i++) {
-                if (task.checked[i] != null && !state.provider.matchesSnapshot(geometry.dependencies[i], task.checked[i])) {
+                if (task.checked[i] != null
+                    && !state.provider.matchesSnapshot(geometry.dependencies[i], task.checked[i])) {
                     stale = true;
                     break;
                 }
@@ -167,7 +196,10 @@ final class GeometryValidator {
     private void metrics() {
         state.restartMetrics.set("validation_backlog", pending.size());
         state.restartMetrics.set("validation_waiting", waiting);
-        state.restartMetrics.set("validation_oldest_ticks", pending.isEmpty() ? 0 :
-            state.ticks - pending.iterator().next().tick);
+        state.restartMetrics.set(
+            "validation_oldest_ticks",
+            pending.isEmpty() ? 0
+                : state.ticks - pending.iterator()
+                    .next().tick);
     }
 }
