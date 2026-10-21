@@ -57,6 +57,10 @@ final class GeometryCache implements AutoCloseable {
         int version;
     }
 
+    interface RegionReader { RandomAccessFile open(Path path) throws IOException; }
+    private final RegionReader reader;
+    private ProfilerCounters profile;
+    void profile(ProfilerCounters profile) { this.profile = profile; }
     private final Path directory;
     private final int dimension;
     private final byte[] config;
@@ -72,14 +76,40 @@ final class GeometryCache implements AutoCloseable {
     private final LinkedHashMap<CubeKey, Lookup> decoded = new LinkedHashMap<>(16, .75f, true);
     private final LinkedHashMap<CubeKey, CompletableFuture<Lookup>> reads = new LinkedHashMap<>();
     private long memory;
-    private final Map<CubeKey, Map<CellKey, GeometryPack>> pending = new LinkedHashMap<>();
+    private static final class PendingRegion {
+        final Map<CellKey, GeometryPack> updates = new LinkedHashMap<>();
+        long generation, firstQueued = System.nanoTime(), retryAfter;
+        int failures;
+    }
+    private static final class Barrier {
+        final Map<CubeKey, Long> targets = new HashMap<>();
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+    }
+    private static final class Memo {
+        Map<CellKey, GeometryPack> cells;
+        java.nio.file.attribute.BasicFileAttributes identity;
+        long bytes;
+    }
+    private final Map<CubeKey, PendingRegion> pending = new LinkedHashMap<>();
+    private final List<Barrier> barriers = new ArrayList<>();
+    private PendingRegion activeWrite;
+    private CubeKey activeKey;
+    private long nextGeneration;
+    private boolean draining;
+    private IOException lostWrite;
+    private final LinkedHashMap<CubeKey, Memo> written = new LinkedHashMap<>(8, .75f, true); // IO only
+    private long writtenBytes;
+    private final Map<CubeKey, Long> lastWrites = new HashMap<>(); // IO only
     private long pendingBytes;
     private boolean scheduled, closed;
     private java.util.concurrent.ScheduledFuture<?> delayedDrain;
     private volatile long writeFailures, dropped, entries;
     private volatile boolean shutdownTimedOut;
-    private volatile long writeRegions, writeCells, writeUpdates, writeBytes, rewriteReadBytes, writeNanos,
-        maxWriteNanos;
+    private volatile long readFailures;
+    private volatile long readQueueNanos, maxReadQueueNanos, readRequests, coalesced, retries;
+    private volatile long rewriteReadNanos, encodeWriteNanos, atomicReplaceNanos, memoReuses;
+    private volatile boolean flushFailed;
+    private volatile long writeRegions, writeCells, writeUpdates, writeBytes, rewriteReadBytes, writeNanos, maxWriteNanos;
     private final Map<CubeKey, Integer> knownEntries = new HashMap<>(); // I/O thread only
 
     private void noteEntries(CubeKey key, int count) {
@@ -88,6 +118,11 @@ final class GeometryCache implements AutoCloseable {
     }
 
     GeometryCache(Path directory, int dimension, SmogConfig settings, long limit) {
+        this(directory, dimension, settings, limit, path -> new RandomAccessFile(path.toFile(), "r"));
+    }
+
+    GeometryCache(Path directory, int dimension, SmogConfig settings, long limit, RegionReader reader) {
+        this.reader = java.util.Objects.requireNonNull(reader, "reader");
         this.directory = directory;
         this.dimension = dimension;
         config = GeometryPack.configFingerprint(settings);
@@ -112,7 +147,13 @@ final class GeometryCache implements AutoCloseable {
         }
         CompletableFuture<Lookup> pending = reads.get(group);
         if (pending == null) {
-            pending = CompletableFuture.supplyAsync(() -> read(cube), io);
+            long enqueued = System.nanoTime();
+            pending = CompletableFuture.supplyAsync(() -> {
+                long wait = System.nanoTime() - enqueued;
+                readQueueNanos += wait; maxReadQueueNanos = Math.max(maxReadQueueNanos, wait); readRequests++;
+                if (profile != null) profile.record(ProfilerCounters.READ_QUEUE, wait, 1);
+                return read(cube);
+            }, io);
             reads.put(group, pending);
         }
         return pending;
@@ -196,93 +237,189 @@ final class GeometryCache implements AutoCloseable {
         metrics.set("cache_rewrite_read_bytes", rewriteReadBytes);
         metrics.set("cache_write_ms", writeNanos / 1e6);
         metrics.set("cache_write_max_ms", maxWriteNanos / 1e6);
+        metrics.set("cache_read_wait_ms", readQueueNanos / 1e6);
+        metrics.set("cache_read_wait_max_ms", maxReadQueueNanos / 1e6);
+        metrics.set("cache_read_requests", readRequests);
+        metrics.set("cache_read_failures", readFailures);
+        metrics.set("cache_write_coalesced", coalesced);
+        metrics.set("cache_rewrite_read_ms", rewriteReadNanos / 1e6);
+        metrics.set("cache_encode_write_ms", encodeWriteNanos / 1e6);
+        metrics.set("cache_atomic_replace_ms", atomicReplaceNanos / 1e6);
+        metrics.set("cache_region_reuse", memoReuses);
+        metrics.set("cache_write_retries", retries);
+        metrics.set("cache_flush_failed", flushFailed ? 1 : 0);
         long readBytes = 0;
         for (CompletableFuture<Lookup> future : reads.values())
             if (future.isDone() && !future.isCompletedExceptionally())
                 readBytes += bytes(future.getNow(new Lookup(Status.MISS)));
         synchronized (pending) {
             metrics.set("cache_inflight_bytes", pendingBytes + readBytes);
+            metrics.set("cache_pending_bytes", pendingBytes);
+            metrics.set("cache_pending_regions", pending.size() + (activeWrite == null ? 0 : 1));
+            long oldest = System.nanoTime();
+            for (PendingRegion region : pending.values()) oldest = Math.min(oldest, region.firstQueued);
+            if (activeWrite != null) oldest = Math.min(oldest, activeWrite.firstQueued);
+            metrics.set("cache_pending_oldest_ms", (System.nanoTime() - oldest) / 1e6);
         }
     }
 
     void store(GeometryPack pack) {
-        // Invalidate the owner-thread decoded view immediately; writer only sees immutable packs.
         Lookup old = decoded.remove(selective ? pack.key.cube() : region(pack.key.cube()));
         if (old != null) memory -= bytes(old);
         synchronized (pending) {
-            if (closed || pendingBytes + pack.bytes() > limit) {
-                dropped++;
-                return;
-            }
-            CubeKey region = region(pack.key.cube());
-            Map<CellKey, GeometryPack> group = pending.computeIfAbsent(region, k -> new LinkedHashMap<>());
-            GeometryPack replaced = group.put(pack.key, pack);
-            pendingBytes += pack.bytes() - (replaced == null ? 0 : replaced.bytes());
-            if (!scheduled) {
-                scheduled = true;
-                delayedDrain = io.schedule(this::drain, 200, TimeUnit.MILLISECONDS);
-            }
+            CubeKey key = region(pack.key.cube());
+            PendingRegion group = pending.get(key);
+            GeometryPack replaced = group == null ? null : group.updates.get(pack.key);
+            long extra = pack.bytes() - (replaced == null ? 0 : replaced.bytes());
+            if (closed || pendingBytes + extra > limit) { dropped++; return; }
+            if (group == null) { group = new PendingRegion(); pending.put(key, group); }
+            group.updates.put(pack.key, pack); group.generation = ++nextGeneration;
+            pendingBytes += extra;
+            if (replaced != null) coalesced++;
+            scheduleDrain(200000000L, false);
         }
+    }
+
+    // Called under pending's monitor. One region per IO turn lets queued demand reads run.
+    private void scheduleDrain(long delay, boolean expedite) {
+        if (io.isShutdown() || draining || scheduled && !expedite) return;
+        if (scheduled && delayedDrain != null) delayedDrain.cancel(false);
+        scheduled = true;
+        delayedDrain = io.schedule(this::drain, Math.max(0, delay), TimeUnit.NANOSECONDS);
     }
 
     private void drain() {
-        while (true) {
-            CubeKey key;
-            Map<CellKey, GeometryPack> updates;
-            synchronized (pending) {
-                if (pending.isEmpty()) {
-                    scheduled = false;
-                    return;
-                }
-                Iterator<Map.Entry<CubeKey, Map<CellKey, GeometryPack>>> it = pending.entrySet()
-                    .iterator();
-                Map.Entry<CubeKey, Map<CellKey, GeometryPack>> e = it.next();
-                key = e.getKey();
-                updates = e.getValue();
-                it.remove();
-                for (GeometryPack p : updates.values()) pendingBytes -= p.bytes();
+        CubeKey key = null;
+        PendingRegion update = null;
+        synchronized (pending) {
+            draining = true; delayedDrain = null;
+            long now = System.nanoTime(), next = Long.MAX_VALUE;
+            boolean urgent = closed || !barriers.isEmpty();
+            for (Map.Entry<CubeKey, PendingRegion> e : pending.entrySet()) {
+                long due = Math.max(e.getValue().retryAfter, urgent ? 0 : lastWrites.getOrDefault(e.getKey(), 0L) + 200000000L);
+                if (due <= now) { key = e.getKey(); update = e.getValue(); break; }
+                next = Math.min(next, due - now);
             }
-            try {
-                long start = System.nanoTime();
-                long previousBytes = Files.exists(file(key)) ? Files.size(file(key)) : 0;
-                Map<CellKey, GeometryPack> all = readRegion(key);
-                all.putAll(updates);
-                writeRegion(key, all);
-                writeRegions++;
-                writeCells += all.size();
-                writeUpdates += updates.size();
-                writeBytes += Files.size(file(key));
-                rewriteReadBytes += previousBytes;
-                long nanos = System.nanoTime() - start;
-                writeNanos += nanos;
-                maxWriteNanos = Math.max(maxWriteNanos, nanos);
-            } catch (IOException | RuntimeException failure) {
-                writeFailures++;
+            if (update == null) {
+                draining = scheduled = false;
+                if (!pending.isEmpty()) scheduleDrain(next, false);
+                return;
+            }
+            pending.remove(key); activeKey = key; activeWrite = update;
+        }
+        boolean success = false;
+        IOException failure = null;
+        long start = System.nanoTime();
+        try {
+            long previousBytes = Files.exists(file(key)) ? Files.size(file(key)) : 0;
+            long readStart = System.nanoTime();
+            long reuseBefore = memoReuses;
+            Map<CellKey, GeometryPack> all = readRegion(key);
+            long profileReadNanos = System.nanoTime() - readStart;
+            rewriteReadNanos += profileReadNanos;
+            if (profile != null) profile.record(ProfilerCounters.REWRITE_READ, profileReadNanos, all.size());
+            all.putAll(update.updates);
+            long encodeStart = System.nanoTime(), replaceBefore = atomicReplaceNanos;
+            writeRegion(key, all);
+            long profileEncodeNanos = System.nanoTime() - encodeStart - (atomicReplaceNanos - replaceBefore);
+            encodeWriteNanos += profileEncodeNanos;
+            if (profile != null) profile.record(ProfilerCounters.CACHE_ENCODE, profileEncodeNanos, all.size());
+            remember(key, all);
+            writeRegions++; writeCells += all.size(); writeUpdates += update.updates.size();
+            writeBytes += Files.size(file(key)); rewriteReadBytes += memoReuses == reuseBefore ? previousBytes : 0;
+            long nanos = System.nanoTime() - start;
+            writeNanos += nanos; maxWriteNanos = Math.max(maxWriteNanos, nanos);
+            if (profile != null) {
+                profile.record(ProfilerCounters.CACHE_WRITE, nanos, all.size());
+                profile.detail(ProfilerCounters.CACHE_WRITE, update.updates.size(), all.size());
+                profile.batch(ProfilerCounters.CACHE_WRITE, all.size());
+                profile.flush(-1, start + nanos, false);
+            }
+            lastWrites.put(key, System.nanoTime()); success = true;
+        } catch (IOException | RuntimeException problem) {
+            failure = problem instanceof IOException ? (IOException)problem : new IOException(problem);
+            writeFailures++;
+            if (profile != null) {
+                profile.count(ProfilerCounters.CACHE_WRITE, 0);
+                profile.failure(ProfilerCounters.CACHE_WRITE);
+                profile.reason(ProfilerCounters.IO_ERROR, 0);
+            }
+            System.err.println("SMOG GeometryCache operation=rewrite timestamp=" + java.time.Instant.now()
+                + " dimension=" + dimension + " path=" + file(key) + " attempt=" + (update.failures + 1));
+            failure.printStackTrace(System.err);
+        } finally {
+            synchronized (pending) {
+                for (GeometryPack p : update.updates.values()) pendingBytes -= p.bytes();
+                if (!success && ++update.failures < 3 && !io.isShutdown()) {
+                    retries++;
+                    update.retryAfter = System.nanoTime() + (200000000L << (update.failures - 1));
+                    PendingRegion newer = pending.get(key);
+                    if (newer == null) { pending.put(key, update); for (GeometryPack p : update.updates.values()) pendingBytes += p.bytes(); }
+                    else {
+                        newer.failures = Math.max(newer.failures, update.failures); newer.retryAfter = update.retryAfter;
+                        for (GeometryPack p : update.updates.values()) if (!newer.updates.containsKey(p.key)) {
+                            if (pendingBytes + p.bytes() <= limit) { newer.updates.put(p.key, p); pendingBytes += p.bytes(); }
+                            else { dropped++; lostWrite = failure; }
+                        }
+                    }
+                } else if (!success) { lostWrite = failure; flushFailed = true; dropped += update.updates.size(); }
+                for (Iterator<Barrier> it = barriers.iterator(); it.hasNext();) {
+                    Barrier barrier = it.next();
+                    Long target = barrier.targets.get(key);
+                    if (success && target != null && target <= update.generation) barrier.targets.remove(key);
+                    if (lostWrite != null) { barrier.future.completeExceptionally(lostWrite); it.remove(); }
+                    else if (barrier.targets.isEmpty()) { barrier.future.complete(null); it.remove(); }
+                }
+                activeKey = null; activeWrite = null; draining = scheduled = false;
+                if (!pending.isEmpty()) scheduleDrain(0, false);
             }
         }
     }
 
-    private Map<CellKey, GeometryPack> readRegion(CubeKey key) {
+    private static boolean sameFile(java.nio.file.attribute.BasicFileAttributes a,
+        java.nio.file.attribute.BasicFileAttributes b) {
+        return a != null && b != null && a.fileKey() != null && b.fileKey() != null
+            && java.util.Objects.equals(a.fileKey(), b.fileKey())
+            && a.size() == b.size() && a.lastModifiedTime().equals(b.lastModifiedTime())
+            && a.creationTime().equals(b.creationTime());
+    }
+    private void remember(CubeKey key, Map<CellKey, GeometryPack> cells) throws IOException {
+        Memo memo = new Memo(); memo.cells = Collections.unmodifiableMap(new LinkedHashMap<>(cells));
+        memo.identity = Files.readAttributes(file(key), java.nio.file.attribute.BasicFileAttributes.class);
+        for (GeometryPack pack : cells.values()) memo.bytes += pack.bytes();
+        Memo old = written.remove(key); if (old != null) writtenBytes -= old.bytes;
+        if (memo.bytes <= limit / 4) { written.put(key, memo); writtenBytes += memo.bytes; }
+        while (writtenBytes > limit / 4 && !written.isEmpty()) {
+            Iterator<Memo> it = written.values().iterator(); writtenBytes -= it.next().bytes; it.remove();
+        }
+    }
+
+    private Map<CellKey, GeometryPack> readRegion(CubeKey key) throws IOException {
         Map<CellKey, GeometryPack> result = new LinkedHashMap<>();
         Path path = file(key);
-        if (!Files.exists(path)) return result;
-        try (RandomAccessFile in = new RandomAccessFile(path.toFile(), "r")) {
-            for (Index entry : index(in, key)) result.putAll(readCube(in, entry, null));
-        } catch (IOException | RuntimeException invalid) {
-            result.clear();
+        java.nio.file.attribute.BasicFileAttributes identity;
+        try { identity = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class); }
+        catch (java.nio.file.NoSuchFileException missing) { return result; }
+        Memo memo = written.get(key);
+        if (memo != null && sameFile(memo.identity, identity)) {
+            memoReuses++; return new LinkedHashMap<>(memo.cells);
         }
+        if (memo != null) { written.remove(key); writtenBytes -= memo.bytes; }
+        try (RandomAccessFile in = reader.open(path)) {
+            for (Index entry : index(in, key)) result.putAll(readCube(in, entry, null));
+        } catch (InvalidPack | RecordCodec.InvalidRecord | java.io.EOFException | ConfigMismatch invalid) {
+            result.clear();
+        } catch (RuntimeException invalid) { result.clear(); }
+        // Other IOExceptions are device/access failures: propagate, retain the old atomic file.
         return result;
     }
 
     private Lookup read(CubeKey cube) {
         Lookup result = new Lookup(Status.MISS);
         long start = System.nanoTime();
+        long failuresBefore = readFailures;
         Path path = file(region(cube));
-        if (!Files.exists(path)) {
-            result.readNanos = System.nanoTime() - start;
-            return result;
-        }
-        try (RandomAccessFile in = new RandomAccessFile(path.toFile(), "r")) {
+        try (RandomAccessFile in = reader.open(path)) {
             List<Index> indexes = index(in, region(cube));
             result.bytes += in.getFilePointer();
             Map<CellKey, GeometryPack> group = new LinkedHashMap<>();
@@ -299,11 +436,36 @@ final class GeometryCache implements AutoCloseable {
             result.status = Status.OK;
         } catch (ConfigMismatch mismatch) {
             result.status = Status.CONFIG;
-        } catch (IOException | RuntimeException invalid) {
+        } catch (InvalidPack | RecordCodec.InvalidRecord | java.io.EOFException invalid) {
             result.status = Status.CORRUPT;
+        } catch (IOException unavailable) {
+            result.status = Status.MISS;
+            if (!Files.notExists(path)) {
+                readFailures++;
+                System.err.println("SMOG GeometryCache operation=read timestamp=" + java.time.Instant.now()
+                    + " dimension=" + dimension + " path=" + path);
+                unavailable.printStackTrace(System.err);
+            }
+        } catch (RuntimeException invalid) { result.status = Status.CORRUPT; }
+        long profileNow = System.nanoTime();
+        result.readNanos = profileNow - start - result.decompressNanos - result.decodeNanos;
+        if (profile != null) {
+            profile.record(ProfilerCounters.CACHE_READ, result.readNanos, result.bytes);
+            if (result.decompressNanos > 0) profile.record(ProfilerCounters.CACHE_DECOMPRESS, result.decompressNanos, result.bytes);
+            if (result.decodeNanos > 0) profile.record(ProfilerCounters.CACHE_DECODE, result.decodeNanos, result.cells.size());
+            profile.reason(readFailures != failuresBefore ? ProfilerCounters.IO_ERROR
+                : result.status == Status.OK ? ProfilerCounters.CACHE_HIT
+                : result.status == Status.CORRUPT ? ProfilerCounters.CORRUPT
+                : result.status == Status.CONFIG ? ProfilerCounters.CONFIG : ProfilerCounters.CACHE_MISS, 0);
+            profile.flush(-1, profileNow, false);
         }
-        result.readNanos = System.nanoTime() - start - result.decompressNanos - result.decodeNanos;
         return result;
+    }
+
+    private static final class InvalidPack extends IOException {
+        private static final long serialVersionUID = 1L;
+        InvalidPack(String message) { super(message); }
+        InvalidPack(Throwable cause) { super("Invalid decoded GeometryPack", cause); }
     }
 
     private static final class ConfigMismatch extends IOException {
@@ -312,7 +474,7 @@ final class GeometryCache implements AutoCloseable {
     }
 
     private List<Index> index(RandomAccessFile in, CubeKey region) throws IOException {
-        if (in.length() < 80 || in.length() > MAX_FILE) throw new IOException("GeometryPack file bounds");
+        if (in.length() < 80 || in.length() > MAX_FILE) throw new InvalidPack("GeometryPack file bounds");
         byte[] prefix = new byte[48];
         in.readFully(prefix);
         DataInputStream first = new DataInputStream(new ByteArrayInputStream(prefix));
@@ -323,7 +485,7 @@ final class GeometryCache implements AutoCloseable {
         first.readFully(stored);
         if (!MessageDigest.isEqual(stored, config)) throw new ConfigMismatch();
         int count = first.readInt();
-        if (count < 0 || count > 64) throw new IOException("GeometryPack index count");
+        if (count < 0 || count > 64) throw new InvalidPack("GeometryPack index count");
         byte[] table = new byte[count * 24];
         in.readFully(table);
         DataInputStream entries = new DataInputStream(new ByteArrayInputStream(table));
@@ -340,7 +502,7 @@ final class GeometryCache implements AutoCloseable {
                 || e.offset != end
                 || e.length < 12
                 || e.length > RecordCodec.MAX + 1036L
-                || e.offset + e.length > in.length()) throw new IOException("GeometryPack index bounds");
+                || e.offset + e.length > in.length()) throw new InvalidPack("GeometryPack index bounds");
             end += e.length;
             result.add(e);
         }
@@ -353,7 +515,7 @@ final class GeometryCache implements AutoCloseable {
         if (!MessageDigest.isEqual(
             RecordCodec.digest()
                 .digest(header),
-            expected) || end != in.length()) throw new IOException("GeometryPack index checksum");
+            expected) || end != in.length()) throw new InvalidPack("GeometryPack index checksum");
         in.seek(checksumAt + 32);
         return result;
     }
@@ -362,7 +524,7 @@ final class GeometryCache implements AutoCloseable {
         in.seek(entry.offset);
         long start = System.nanoTime();
         byte[] raw = RecordCodec.read(in);
-        if (in.getFilePointer() != entry.offset + entry.length) throw new IOException("GeometryPack record extent");
+        if (in.getFilePointer() != entry.offset + entry.length) throw new InvalidPack("GeometryPack record extent");
         if (stats != null) {
             stats.bytes += entry.length;
             stats.decompressNanos += System.nanoTime() - start;
@@ -379,7 +541,7 @@ final class GeometryCache implements AutoCloseable {
                     throw new IOException("GeometryPack duplicate/coordinate mismatch");
             }
             if (data.read() != -1) throw new IOException("GeometryPack trailing bytes");
-        }
+        } catch (IOException | RuntimeException invalid) { throw new InvalidPack(invalid); }
         if (stats != null) stats.decodeNanos += System.nanoTime() - decodeStart;
         return result;
     }
@@ -439,7 +601,11 @@ final class GeometryCache implements AutoCloseable {
                 out.getFD()
                     .sync();
             }
+            long replaceStart = System.nanoTime();
             RecordCodec.replace(tmp, target);
+            long profileReplaceNanos = System.nanoTime() - replaceStart;
+            atomicReplaceNanos += profileReplaceNanos;
+            if (profile != null) profile.record(ProfilerCounters.ATOMIC_REPLACE, profileReplaceNanos, 1);
             for (Map.Entry<CubeKey, List<GeometryPack>> e : cubes.entrySet()) noteEntries(
                 e.getKey(),
                 e.getValue()
@@ -450,36 +616,38 @@ final class GeometryCache implements AutoCloseable {
     }
 
     CompletableFuture<Void> flush() {
-        return CompletableFuture.runAsync(this::drain, io);
+        synchronized (pending) {
+            if (lostWrite != null) { CompletableFuture<Void> failed = new CompletableFuture<>(); failed.completeExceptionally(lostWrite); return failed; }
+            Barrier barrier = new Barrier();
+            for (Map.Entry<CubeKey, PendingRegion> e : pending.entrySet()) barrier.targets.put(e.getKey(), e.getValue().generation);
+            if (activeWrite != null) barrier.targets.merge(activeKey, activeWrite.generation, Math::max);
+            if (barrier.targets.isEmpty()) barrier.future.complete(null);
+            else { barriers.add(barrier); scheduleDrain(0, true); }
+            return barrier.future;
+        }
     }
 
     @Override
     public void close() {
-        synchronized (pending) {
-            if (closed) return;
-            closed = true;
-            if (delayedDrain != null) delayedDrain.cancel(false);
-        }
-        // Bypass the 200 ms coalescing delay, then wait only at shutdown. This is
-        // derived data: a timeout leaves a recoverable old atomic file, never a
-        // checkpoint failure. Filesystem stalls cannot block the owner indefinitely.
-        io.execute(this::drain);
-        io.shutdown();
+        synchronized (pending) { if (closed) return; closed = true; }
+        CompletableFuture<Void> flushed = flush();
         try {
             long timeout = RestartOptions.millis("smog.geometryShutdownMs", 2000, 0, 10000);
-            if (!io.awaitTermination(timeout, TimeUnit.NANOSECONDS)) {
-                shutdownTimedOut = true;
-                io.shutdownNow();
-                System.err.println("SMOG derived geometry-cache flush timed out; cache may need rebuilding");
-            }
+            long deadline = System.nanoTime() + timeout;
+            flushed.get(timeout, TimeUnit.NANOSECONDS);
+            if (profile != null) io.execute(() -> profile.flush(-1, System.nanoTime(), true));
+            io.shutdown();
+            if (!io.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS))
+                throw new java.util.concurrent.TimeoutException("IO worker did not terminate");
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            shutdownTimedOut = true; flushFailed = true;
+            System.err.println("SMOG GeometryCache operation=close dimension=" + dimension + " path=" + directory + " flush timed out");
+        } catch (java.util.concurrent.ExecutionException failure) {
+            flushFailed = true;
+            System.err.println("SMOG GeometryCache operation=close dimension=" + dimension + " path=" + directory + " flush FAILED: " + failure.getCause());
         } catch (InterruptedException interrupted) {
-            shutdownTimedOut = true;
-            io.shutdownNow();
-            Thread.currentThread()
-                .interrupt();
-        }
-        decoded.clear();
-        reads.clear();
-        memory = 0;
+            shutdownTimedOut = true; flushFailed = true; Thread.currentThread().interrupt();
+        } finally { io.shutdownNow(); }
+        decoded.clear(); reads.clear(); memory = 0;
     }
 }

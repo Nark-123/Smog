@@ -249,9 +249,13 @@ final class Partitioner {
         strictCount = number = first = scan = stage = 0;
     }
 
+    int lastUnits;
+
     boolean advance(int units) {
+        lastUnits = 0;
         while (units-- > 0 && stage != 99) {
             unit();
+            lastUnits++;
         }
         return stage == 99;
     }

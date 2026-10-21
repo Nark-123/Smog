@@ -766,6 +766,9 @@ final class Checkpoint {
 
     static DimensionState restore(Data d, WorldSnapshotProvider provider) {
         DimensionState s = new DimensionState(d.dimension, d.config, provider);
+        s.profile.checkpoint(d.cells.isEmpty() ? ProfilerCounters.CheckpointStatus.EMPTY
+            : ProfilerCounters.CheckpointStatus.LOADED, false);
+        s.profile.checkpointInfo(d.cells.size(), d.bytes, d.formatVersion);
         s.ticks = d.ticks;
         s.steps = d.steps;
         s.emissionWindows = d.windows;
@@ -778,7 +781,6 @@ final class Checkpoint {
         s.removed = d.removed;
         s.openRejected = d.openRejected;
         s.graph.sparseClocks(d.steps, d.escaped);
-        s.frames.addAll(d.frames);
         s.openAccepted.putAll(d.open);
         for (CellData saved : d.cells) {
             DimensionState.Cell c = s.cell(saved.key, true);
@@ -804,14 +806,15 @@ final class Checkpoint {
         for (BlockPos p : d.open.keySet()) {
             s.cell(p.cell(), true);
         }
-        s.frames.clear();
+        long profileIndexStart = s.profile.begin(ProfilerCounters.FRAME_INDEX);
         for (DimensionState.Frame f : d.frames) {
             DimensionState.Source[] handles = new DimensionState.Source[f.positions.length];
             for (int i = 0; i < handles.length; i++) {
                 handles[i] = s.sources.get(f.positions[i]);
             }
-            s.frames.addLast(new DimensionState.Frame(f.positions, f.amounts, f.rejected, handles));
+            s.addFrame(new DimensionState.Frame(f.positions, f.amounts, f.rejected, handles));
         }
+        s.profile.end(ProfilerCounters.FRAME_INDEX, profileIndexStart, d.frames.size());
         // No world snapshots, readiness probes, geometry, or topology at load time.
         return s;
     }

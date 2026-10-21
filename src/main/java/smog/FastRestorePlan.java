@@ -48,19 +48,19 @@ final class FastRestorePlan extends RestorePlan {
         // Runtime reactivation validates before publishing: a newer session build may
         // still have a delayed disk write. It never reuses the cold-mass exemption.
         boolean coldOnly = true;
-        for (DimensionState.Cell c : first.cube.cells) if (c != null && c.reloadCacheEligible) coldOnly = false;
-        optimistic = coldOnly && state.restartOptions.optimistic && state.restartOptions.fast;
         for (DimensionState.Cell c : first.cube.cells)
-            if (c != null && (c.checkpointRestorePending || c.reloadCacheEligible)
-                && c.geometry == null
-                && !c.building
-                && !c.cacheAttempted
-                && state.provider.isReady(c.cube.key)) {
-                    c.queued = false;
-                    c.building = true;
-                    c.cacheAttempted = true;
-                    entries.add(new Entry(c));
-                }
+            if (c != null && c.reloadCacheEligible) coldOnly = false;
+        optimistic = coldOnly && state.restartOptions.optimistic && state.restartOptions.fast;
+        for (DimensionState.Cell c : first.cube.cells) if (c != null && (c.checkpointRestorePending || c.reloadCacheEligible)
+            && c.geometry == null
+            && !c.building
+            && !c.cacheAttempted
+            && state.provider.isReady(c.cube.key)) {
+                c.queued = false;
+                c.building = true;
+                c.cacheAttempted = true;
+                entries.add(new Entry(c));
+            }
         future = state.geometryCache.request(first.cube.key);
     }
 
@@ -148,8 +148,7 @@ final class FastRestorePlan extends RestorePlan {
                 return 1;
             }
             DimensionState.Geometry g = e.geometry = new DimensionState.Geometry();
-            g.verification = optimistic ? DimensionState.GeometryState.UNVERIFIED
-                : DimensionState.GeometryState.VALIDATED;
+            g.verification = optimistic ? DimensionState.GeometryState.UNVERIFIED : DimensionState.GeometryState.VALIDATED;
             // These geometry inputs are immutable after pack decode. Runtime IDs/version
             // arrays remain private to this publication; parked mass always copies membership.
             g.labels = e.pack.labels;
@@ -220,7 +219,8 @@ final class FastRestorePlan extends RestorePlan {
         for (Entry e : entries) {
             if (e.cell.ticket != e.ticket || e.cell.geometry != null
                 || !(e.cell.checkpointRestorePending || e.cell.reloadCacheEligible)
-                || !state.provider.isReady(e.cell.cube.key)) return abandon();
+                || !state.provider.isReady(e.cell.cube.key))
+                return abandon();
             for (int i = 0; !optimistic && i < e.snapshots.length; i++)
                 if (!state.provider.matchesSnapshot(e.pack.dependencies[i], e.snapshots[i])) return abandon();
             for (int d = 0; d < 6; d++) {
@@ -298,11 +298,9 @@ final class FastRestorePlan extends RestorePlan {
                 DimensionState.Cell c = state.cell(CellBuild.neighbor(e.cell.key, d), false);
                 e.neighbors[d] = c == null ? null : c.geometry;
             }
-            for (int i = 0; i < e.pack.contacts.length; i += 4) edges.addAggregate(
-                e.base + e.pack.contacts[i],
-                e.base + e.pack.contacts[i + 1],
-                e.pack.contacts[i + 2],
-                e.pack.contacts[i + 3]);
+            for (int i = 0; i < e.pack.contacts.length; i += 4)
+                edges.addAggregate(e.base + e.pack.contacts[i], e.base + e.pack.contacts[i + 1],
+                    e.pack.contacts[i + 2], e.pack.contacts[i + 3]);
         }
         cursor = face = voxel = 0;
         contactsCaptured = true;

@@ -8,6 +8,7 @@ import java.util.Arrays;
  * Timing is performed once per existing scheduler unit, never per voxel/BFS vertex.
  */
 public final class GeometryMetrics {
+    ProfilerCounters profile;
 
     public static final int SNAPSHOTS = 0;
     public static final int HALO = 1;
@@ -123,6 +124,7 @@ public final class GeometryMetrics {
     }
 
     void front(long nanos) {
+        if (profile != null) profile.record(ProfilerCounters.FRONT, nanos, 1);
         frontScans++;
         frontNanos += nanos;
         if (recordingSafeCall) {
@@ -132,6 +134,7 @@ public final class GeometryMetrics {
     }
 
     void worldValidation(long nanos, boolean valid) {
+        if (profile != null) profile.record(ProfilerCounters.WORLD_CHECK, nanos, 1);
         worldValidations++;
         worldValidationNanos += nanos;
         if (recordingSafeCall) {
@@ -144,6 +147,7 @@ public final class GeometryMetrics {
     }
 
     void contactValidation(long nanos, boolean valid) {
+        if (profile != null) profile.record(ProfilerCounters.CONTACT_CHECK, nanos, 6);
         contactValidations++;
         contactValidationNanos += nanos;
         if (recordingSafeCall) {
@@ -156,6 +160,7 @@ public final class GeometryMetrics {
     }
 
     void capture(long nanos) {
+        if (profile != null) profile.record(ProfilerCounters.CAPTURE, nanos, 1);
         captureCalls++;
         captureNanos += nanos;
         captureMaxNanos = Math.max(captureMaxNanos, nanos);
@@ -178,6 +183,7 @@ public final class GeometryMetrics {
     }
 
     void refreshed(long nanos) {
+        if (profile != null) profile.record(ProfilerCounters.CONTACT_REFRESH, nanos, 1);
         refreshRequestNanos += nanos;
         if (recordingSafeCall) {
             safeTotals[SAFE_REFRESH_REQUEST_NANOS] += nanos;

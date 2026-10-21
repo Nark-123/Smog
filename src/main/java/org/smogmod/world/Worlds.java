@@ -49,30 +49,22 @@ public final class Worlds {
     public static void beginServerTick() {
         if (geometryBudget != null) {
             geometryBudget.begin(System.nanoTime());
-            for (WorldRuntime runtime : WORLDS.values())
-                geometryBudget.offer(runtime, runtime.state.geometryWorkWeight());
+            for (WorldRuntime runtime : WORLDS.values()) geometryBudget.offer(runtime, runtime.state.geometryWorkWeight());
         }
     }
 
     public static void endServerTick() {
-        if (geometryBudget != null) geometryBudget.end(System.nanoTime());
+        if (geometryBudget != null) {
+            long now = System.nanoTime();
+            geometryBudget.end(now);
+            for (WorldRuntime runtime : WORLDS.values()) runtime.state.profile.serverTick(geometryBudget.previousNanos(), now);
+        }
     }
 
-    static long geometryAllowance(WorldRuntime runtime) {
-        return geometryBudget.grant(runtime, runtime.state.geometryWorkWeight());
-    }
-
-    static void smogUsed(WorldRuntime runtime, long total, long geometry) {
-        geometryBudget.used(runtime, total, geometry);
-    }
-
-    static double previousMspt() {
-        return geometryBudget.previousMspt();
-    }
-
-    static void updateMsptMetrics(smog.RestartMetrics metrics) {
-        geometryBudget.updateMsptMetrics(metrics);
-    }
+    static long geometryAllowance(WorldRuntime runtime) { return geometryBudget.grant(runtime, runtime.state.geometryWorkWeight()); }
+    static void smogUsed(WorldRuntime runtime, long total, long geometry) { geometryBudget.used(runtime, total, geometry); }
+    static double previousMspt() { return geometryBudget.previousMspt(); }
+    static void updateMsptMetrics(smog.RestartMetrics metrics) { geometryBudget.updateMsptMetrics(metrics); }
 
     public static void unload(World world) {
         WorldRuntime runtime = WORLDS.get(world);

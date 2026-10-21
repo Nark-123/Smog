@@ -19,6 +19,7 @@ import cpw.mods.fml.common.network.NetworkRegistry;
 import cpw.mods.fml.common.network.simpleimpl.SimpleNetworkWrapper;
 import cpw.mods.fml.relauncher.Side;
 import smog.SpatialQueries;
+import smog.ProfilerCounters;
 
 public final class SmogNetwork {
 
@@ -67,6 +68,8 @@ public final class SmogNetwork {
         if (runtime.world.getTotalWorldTime() % 20 != 0) {
             return;
         }
+        long profileStart = runtime.state.profile.begin(ProfilerCounters.NETWORK);
+        try {
         Set<Long> requested = new HashSet<>();
         for (Object item : runtime.world.playerEntities) {
             EntityPlayerMP player = (EntityPlayerMP) item;
@@ -106,6 +109,7 @@ public final class SmogNetwork {
             send(player, new ChunkCoordIntPair(0, 0), amount, true);
             runtime.networkPackets++;
         }
+        } finally { runtime.state.profile.end(ProfilerCounters.NETWORK, profileStart, runtime.networkPackets); }
     }
 
     public void clear() {
